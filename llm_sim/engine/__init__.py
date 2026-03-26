@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from llm_sim.engine.commands import ModCommand, parse_command
+from llm_sim.engine.executor import SimulationExecutor, SimulationResult
 from llm_sim.engine.modifier import ModificationReport, apply_modifications
 from llm_sim.engine.schema_description import command_schema_text
 from llm_sim.engine.validation import ValidationResult, validate_command
@@ -15,6 +16,8 @@ logger = logging.getLogger("llm_sim.engine")
 __all__ = [
     "ModCommand",
     "ModificationReport",
+    "SimulationExecutor",
+    "SimulationResult",
     "ValidationResult",
     "apply_modifications",
     "command_schema_text",
