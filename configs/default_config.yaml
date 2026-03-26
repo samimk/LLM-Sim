@@ -11,6 +11,7 @@ exago:
   dcopflow_binary: null
   pflow_binary: null
   # Environment setup script (optional, run before simulation)
+  # Copy configs/env_setup.sh.template to configs/env_setup.sh and adjust paths
   env_script: "./configs/env_setup.sh"
   # Default timeout for simulation execution (seconds)
   timeout: 120
