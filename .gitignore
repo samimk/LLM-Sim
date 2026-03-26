@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# LLM-Sim runtime
+workdir/
+logs/
+*.log
+.env
+
+# Applications and data (large/machine-specific)
+applications/*
+!applications/README.md
+data/*
+!data/README.md
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.claude/
+prompts/

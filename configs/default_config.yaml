@@ -1,0 +1,52 @@
+# LLM-Sim Default Configuration
+
+# ExaGO settings
+exago:
+  binary_dir: "./applications"  # Local applications/ folder; override for external ExaGO install
+  # Individual binary paths (derived from binary_dir if not set)
+  opflow_binary: null    # defaults to {binary_dir}/opflow
+  scopflow_binary: null
+  tcopflow_binary: null
+  sopflow_binary: null
+  dcopflow_binary: null
+  pflow_binary: null
+  # Environment setup script (optional, run before simulation)
+  env_script: null
+  # Default timeout for simulation execution (seconds)
+  timeout: 120
+
+# Data settings
+data:
+  data_dir: "./data"            # Default location for network files and scenarios
+
+# LLM backend settings
+llm:
+  backend: "anthropic"          # openai | anthropic | ollama | ollama-cloud
+  model: "claude-sonnet-4-20250514"
+  api_key_env: "ANTHROPIC_API_KEY"  # env var name containing the API key
+  # OpenAI-specific
+  openai_base_url: null
+  # Ollama-specific
+  ollama_host: "http://localhost:11434"
+  ollama_cloud_host: null
+  # Generation parameters
+  temperature: 0.3
+  max_tokens: 4096
+
+# Search settings
+search:
+  max_iterations: 20
+  default_mode: "accumulative"  # accumulative | fresh
+  # Base case files (can be overridden via CLI)
+  base_case: null               # path to .m file
+  gic_file: null                # path to .gic file (optional)
+  application: "opflow"         # opflow | scopflow | tcopflow | sopflow | dcopflow | pflow
+
+# Output settings
+output:
+  workdir: "./workdir"
+  logs_dir: "./logs"
+  save_journal: true            # save journal to file after search
+  journal_format: "json"        # json | csv
+  save_modified_files: true     # keep modified .m files from each iteration
+  verbose: false                # print detailed output during search
