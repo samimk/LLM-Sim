@@ -1,6 +1,6 @@
 # LLM-Sim
 
-LLM-driven iterative simulation and analysis tool for the [ExaGO](https://github.com/pnnl/ExaGO) power grid optimization toolkit.
+LLM-driven iterative simulation and analysis tool for the [ExaGO](https://github.com/ornl/ExaGO) power grid optimization toolkit.
 
 LLM-Sim uses large language models to iteratively modify power grid simulation inputs, run ExaGO solvers, interpret results, and search for configurations that satisfy user-defined goals expressed in natural language.
 
