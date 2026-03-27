@@ -42,6 +42,49 @@ The search journal tracks every iteration, providing the LLM with a history of w
 
 ## Usage
 
+### Shell script (recommended for interactive use)
+
+`run_llm_sim.sh` is the easiest way to start a session. It prompts you to type
+the goal interactively, prints a confirmation header, and then launches the
+simulation.
+
+```bash
+# Use all defaults (configs/local_config.yaml, case_ACTIVSg200.m, 20 iterations)
+./run_llm_sim.sh
+
+# Override the config file only
+./run_llm_sim.sh configs/my_config.yaml
+
+# Override config and case file
+./run_llm_sim.sh configs/my_config.yaml ./data/case_RTS.m
+
+# Override all three (config, case file, max iterations)
+./run_llm_sim.sh configs/my_config.yaml ./data/case_RTS.m 10
+```
+
+When run, the script will ask:
+```
+Enter simulation prompt: Find the maximum load scaling factor before infeasibility
+```
+
+Then print a summary before executing:
+```
+============================================================
+  LLM-Sim Run
+============================================================
+  Config:    configs/local_config.yaml
+  Case file: ./data/case_ACTIVSg200.m
+  Max iter:  20
+  Prompt:    Find the maximum load scaling factor before infeasibility
+============================================================
+```
+
+The three positional arguments correspond to the three most commonly varied
+settings. Everything else (backend, model, application, verbosity) is
+controlled by the config file.
+
+### Direct CLI
+
 ```bash
 # Basic run
 llm-sim ./data/case_ACTIVSg200.m "Find the maximum load scaling factor"
@@ -54,7 +97,7 @@ llm-sim ./data/case_ACTIVSg200.m "Minimize generation cost" \
 # Quiet mode (only show final summary)
 llm-sim ./data/case_ACTIVSg200.m "Analyze voltage profile" --quiet
 
-# Run as module
+# Dry run (validate config without executing)
 python -m llm_sim ./data/case_ACTIVSg200.m "test goal" --dry-run
 ```
 

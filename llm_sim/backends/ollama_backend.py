@@ -35,7 +35,15 @@ class OllamaBackend(LLMBackend):
             self._host = config.ollama_host
             self._backend_name = "ollama"
 
-        self._client = ollama.Client(host=self._host)
+        # For Ollama Cloud, pass API key as Bearer token if available
+        import os
+        api_key = os.environ.get("OLLAMA_API_KEY")
+        client_kwargs: dict = {"host": self._host}
+        if api_key:
+            client_kwargs["headers"] = {"Authorization": f"Bearer {api_key}"}
+            logger.info("Using OLLAMA_API_KEY for authentication")
+
+        self._client = ollama.Client(**client_kwargs)
 
     def name(self) -> str:
         """Return the backend name."""
