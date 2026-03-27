@@ -1,0 +1,21 @@
+# Preset search goals for the LLM-Sim Launcher
+# Each entry has a short label (for the dropdown) and the full goal text
+
+goals:
+  - label: "Minimize generation cost"
+    goal: "Minimize total generation cost while maintaining all bus voltages within 0.95–1.05 p.u. and keeping all line loadings below 100%."
+
+  - label: "Reduce cost by 10%"
+    goal: "Reduce the total generation cost by at least 10% compared to the base case, while maintaining system feasibility (all voltages within limits, no line overloads)."
+
+  - label: "Maximize loadability"
+    goal: "Find the maximum uniform load scaling factor the network can serve while keeping all line loadings below 90% and all bus voltages within 0.95–1.05 p.u."
+
+  - label: "Fix voltage violations"
+    goal: "Identify any buses with voltage magnitudes outside the 0.95–1.05 p.u. range and adjust generator voltage setpoints and dispatch to bring all voltages within limits, while minimizing the increase in generation cost."
+
+  - label: "Minimize losses"
+    goal: "Minimize total active power losses in the network by adjusting generator dispatch and voltage setpoints, while keeping all bus voltages within 0.95–1.05 p.u. and all line loadings below 100%."
+
+  - label: "N-1 security improvement"
+    goal: "Improve the network's ability to handle single contingencies by reducing the loading on the most heavily loaded lines to below 75%, adjusting generator dispatch as needed while maintaining voltage limits."
