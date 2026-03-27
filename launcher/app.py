@@ -4,6 +4,8 @@ import streamlit as st
 import time
 from pathlib import Path
 
+import plotly.graph_objects as go
+
 try:
     from config_builder import (
         scan_data_files, load_example_goals, build_config_overrides,
@@ -145,9 +147,11 @@ def render_sidebar() -> dict:
         # ── LLM Backend ─────────────────────────────────────────────────
         st.header("🤖 LLM Backend")
         backend = st.selectbox("Backend", BACKENDS, disabled=disabled)
+        model_key = f"model_input_{backend}"
         model = st.text_input(
             "Model",
             value=DEFAULT_MODELS.get(backend, ""),
+            key=model_key,
             disabled=disabled,
         )
         temperature = st.slider(
@@ -284,17 +288,46 @@ def render_welcome(base_case: Path | None):
             st.error(f"Failed to parse base case: {e}")
 
 
-# ── State B: Live Monitor (Skeleton) ─────────────────────────────────────────
+# ── State B: Live Monitor ─────────────────────────────────────────────────────
+
+def _iteration_icon(entry: dict) -> str:
+    """Return a status icon for an iteration log entry."""
+    if entry.get("convergence_status") == "FAILED" or entry.get("status") == "FAILED":
+        return "❌"
+    if entry.get("feasible"):
+        return "✅"
+    return "⚠️"
+
+
+def _format_command(cmd: dict) -> str:
+    """Format a single command dict as a compact summary line."""
+    action = cmd.get("action", "unknown")
+    parts = [f"{action}:"]
+    for k, v in cmd.items():
+        if k == "action":
+            continue
+        parts.append(f"{k}={v}")
+    return " ".join(parts)
+
 
 def render_live_monitor():
-    """Render the live search monitor. Full implementation in Step 5."""
-    st.header("🔄 Search in Progress...")
+    """Render the live search monitor with iteration timeline and charts."""
 
+    # 1. Poll for updates
     manager = st.session_state.session_manager
     if manager is not None:
         updates = manager.poll_updates()
         for update in updates:
-            if update["type"] == "iteration":
+            if update["type"] == "search_finished":
+                st.session_state.search_running = False
+                st.session_state.search_finished = True
+                st.session_state.search_session = manager.get_session()
+                st.session_state.search_error = manager.get_error()
+                st.session_state.base_opflow = manager.get_base_opflow()
+                st.session_state.best_opflow = manager.get_best_opflow()
+                st.rerun()
+                return
+            elif update["type"] == "iteration":
                 st.session_state.iteration_log.append(update)
                 st.session_state.current_iteration = update["iteration"]
             elif update["type"] == "phase":
@@ -307,35 +340,154 @@ def render_live_monitor():
                 st.session_state.current_phase = phase_labels.get(
                     update["phase"], update["phase"]
                 )
-            elif update["type"] == "search_finished":
-                st.session_state.search_running = False
-                st.session_state.search_finished = True
-                st.session_state.search_session = manager.get_session()
-                st.session_state.search_error = manager.get_error()
-                st.session_state.base_opflow = manager.get_base_opflow()
-                st.session_state.best_opflow = manager.get_best_opflow()
-                st.rerun()
             elif update["type"] == "error":
                 st.session_state.search_error = update["message"]
 
-    # Show current status
-    if st.session_state.current_phase:
-        st.info(
-            f"Iteration {st.session_state.current_iteration}: "
-            f"{st.session_state.current_phase}"
-        )
+    # 2. Header
+    st.header("🔄 Search in Progress...")
 
-    # Show iteration log (simple version — will be replaced in Step 5)
-    for entry in st.session_state.iteration_log:
-        status_icon = "✅" if entry.get("feasible") else "❌"
-        obj = entry.get("objective_value")
-        obj_str = f"${obj:,.2f}" if obj is not None else "FAILED"
-        st.write(
-            f"{status_icon} **Iter {entry['iteration']}**: "
-            f"{entry['description']} — {obj_str}"
-        )
+    # 3. Two-column layout
+    left_col, right_col = st.columns([2, 1])
 
-    # Auto-rerun to poll for updates
+    # ── Left Column: Iteration Timeline ──────────────────────────────────
+    with left_col:
+        for entry in st.session_state.iteration_log:
+            icon = _iteration_icon(entry)
+            obj = entry.get("objective_value")
+            obj_str = f"${obj:,.2f}" if obj is not None else "FAILED"
+            elapsed = entry.get("sim_elapsed")
+            time_str = f"{elapsed:.1f}s" if elapsed is not None else "—"
+            label = (
+                f"{icon} Iteration {entry['iteration']}: "
+                f"{entry['description']} — {obj_str} ({time_str})"
+            )
+
+            with st.expander(label):
+                # LLM Reasoning
+                reasoning = entry.get("llm_reasoning")
+                if reasoning:
+                    st.markdown(f"*{reasoning}*")
+
+                # Commands
+                commands = entry.get("commands", [])
+                if commands:
+                    st.markdown(f"**Commands** ({len(commands)}):")
+                    cmd_lines = [_format_command(c) for c in commands]
+                    st.code("\n".join(cmd_lines), language=None)
+
+                # Key Metrics
+                v_min, v_max = entry.get("voltage_range", (0, 0))
+                mc1, mc2, mc3, mc4 = st.columns(4)
+                mc1.metric("Voltage", f"{v_min:.3f} – {v_max:.3f} p.u."
+                           if v_min > 0 else "—")
+                mc2.metric("Max Line Load", f"{entry.get('max_line_loading_pct', 0):.1f}%")
+                mc3.metric("Generation", f"{entry.get('total_gen_mw', 0):.1f} MW")
+                mc4.metric("Violations", entry.get("violations_count", 0))
+
+                # Mode
+                st.caption(f"Mode: {entry.get('mode', '—')}")
+
+        # Current phase indicator
+        if st.session_state.search_running and st.session_state.current_phase:
+            with st.status(
+                f"Iteration {st.session_state.current_iteration}: "
+                f"{st.session_state.current_phase}",
+                state="running",
+            ):
+                st.write("Waiting for results...")
+
+    # ── Right Column: Live Charts and Stats ──────────────────────────────
+    with right_col:
+        # Convergence Chart
+        iterations = []
+        values = []
+        colors = []
+        for entry in st.session_state.iteration_log:
+            if entry["objective_value"] is not None:
+                iterations.append(entry["iteration"])
+                values.append(entry["objective_value"])
+                colors.append("green" if entry["feasible"] else "red")
+
+        fig = go.Figure()
+        if iterations:
+            fig.add_trace(go.Scatter(
+                x=iterations, y=values,
+                mode="lines+markers",
+                marker=dict(color=colors, size=8),
+                line=dict(color="rgba(100,100,100,0.5)"),
+                hovertemplate="Iter %{x}<br>$%{y:,.2f}<extra></extra>",
+            ))
+        fig.update_layout(
+            title="Convergence",
+            xaxis_title="Iteration",
+            yaxis_title="Objective Value ($)",
+            height=280,
+            margin=dict(l=20, r=20, t=40, b=20),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Voltage Range Chart
+        iters_v = [e["iteration"] for e in st.session_state.iteration_log
+                    if e["voltage_range"][0] > 0]
+        v_min_list = [e["voltage_range"][0] for e in st.session_state.iteration_log
+                      if e["voltage_range"][0] > 0]
+        v_max_list = [e["voltage_range"][1] for e in st.session_state.iteration_log
+                      if e["voltage_range"][0] > 0]
+
+        fig2 = go.Figure()
+        if iters_v:
+            fig2.add_trace(go.Scatter(
+                x=iters_v + iters_v[::-1],
+                y=v_max_list + v_min_list[::-1],
+                fill="toself",
+                fillcolor="rgba(66, 133, 244, 0.2)",
+                line=dict(color="rgba(0,0,0,0)"),
+                name="V range",
+            ))
+            fig2.add_trace(go.Scatter(
+                x=iters_v, y=v_max_list, mode="lines",
+                line=dict(color="blue"), name="V_max",
+            ))
+            fig2.add_trace(go.Scatter(
+                x=iters_v, y=v_min_list, mode="lines",
+                line=dict(color="blue"), name="V_min",
+            ))
+        fig2.add_hline(y=0.95, line_dash="dash", line_color="red",
+                       annotation_text="0.95 p.u.")
+        fig2.add_hline(y=1.05, line_dash="dash", line_color="red",
+                       annotation_text="1.05 p.u.")
+        fig2.update_layout(
+            title="Voltage Range",
+            xaxis_title="Iteration",
+            yaxis_title="Voltage (p.u.)",
+            height=280,
+            margin=dict(l=20, r=20, t=40, b=20),
+            showlegend=False,
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+
+        # Progress Stats
+        st.markdown("---")
+        n_iters = len(st.session_state.iteration_log)
+        feasible_count = sum(
+            1 for e in st.session_state.iteration_log if e.get("feasible")
+        )
+        st.metric("Iterations", n_iters)
+        st.metric("Feasible", feasible_count)
+        if st.session_state.iteration_log:
+            feasible_entries = [
+                e for e in st.session_state.iteration_log
+                if e.get("feasible") and e.get("objective_value") is not None
+            ]
+            if feasible_entries:
+                best = min(feasible_entries, key=lambda e: e["objective_value"])
+                st.metric(
+                    "Best Cost",
+                    f"${best['objective_value']:,.2f}",
+                    delta=f"Iter {best['iteration']}",
+                )
+
+    # 4. Auto-rerun (MUST be last)
     if st.session_state.search_running:
         time.sleep(1)
         st.rerun()
