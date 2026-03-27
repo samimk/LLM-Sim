@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from llm_sim.backends import create_backend
 from llm_sim.backends.base import LLMBackend, LLMResponse
@@ -53,12 +53,21 @@ class SearchSession:
 class AgentLoopController:
     """Drives the iterative LLM-driven search."""
 
-    def __init__(self, config: AppConfig, quiet: bool = False) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        quiet: bool = False,
+        on_iteration: Callable[[int, JournalEntry, str, OPFLOWResult | None], None] | None = None,
+        on_phase: Callable[[int, str], None] | None = None,
+    ) -> None:
         self._config = config
         self._backend: LLMBackend = create_backend(config.llm)
         self._executor = SimulationExecutor(config.exago, config.output)
         self._journal = SearchJournal()
         self._quiet = quiet
+        self._on_iteration = on_iteration
+        self._on_phase = on_phase
+        self._stop_requested = False
 
         # State tracked across iterations
         self._base_network: Optional[MATNetwork] = None
@@ -78,6 +87,10 @@ class AgentLoopController:
         """Print progress message unless quiet mode is enabled."""
         if not self._quiet:
             print(msg)
+
+    def request_stop(self) -> None:
+        """Request graceful termination of the search loop."""
+        self._stop_requested = True
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -149,10 +162,25 @@ class AgentLoopController:
             )
             self._print(f"[Iter 0] Base case simulation FAILED: {sim_result.error_message}")
 
+        # Notify callback after base case
+        if self._on_iteration:
+            latest_entry = self._journal.latest
+            if latest_entry:
+                self._on_iteration(0, latest_entry, "base_case", self._latest_opflow)
+
         # 3. Agent loop
         max_iter = self._config.search.max_iterations
         for iteration in range(1, max_iter + 1):
+            if self._stop_requested:
+                session.termination_reason = "user_stopped"
+                self._print("\nSearch stopped by user.")
+                break
             action_type, should_continue = self._iteration(iteration, goal)
+            # Notify callback after each iteration
+            if self._on_iteration:
+                latest_entry = self._journal.latest
+                if latest_entry:
+                    self._on_iteration(iteration, latest_entry, action_type, self._latest_opflow)
             if not should_continue:
                 if not session.termination_reason:
                     session.termination_reason = "completed"
@@ -163,6 +191,17 @@ class AgentLoopController:
 
         if not session.termination_reason:
             session.termination_reason = "completed"
+
+        # Final notification with termination reason
+        if self._on_iteration:
+            latest_entry = self._journal.latest
+            if latest_entry:
+                self._on_iteration(
+                    latest_entry.iteration,
+                    latest_entry,
+                    session.termination_reason,
+                    self._latest_opflow,
+                )
 
         session.end_time = datetime.now().isoformat()
         session.total_prompt_tokens = self._total_prompt_tokens
@@ -196,6 +235,9 @@ class AgentLoopController:
             self._error_feedback,
         )
         self._error_feedback = None  # consumed
+
+        if self._on_phase:
+            self._on_phase(iteration, "llm_request")
 
         response = self._backend.complete(system_prompt, user_prompt)
         logger.debug("LLM raw response: %s", response.raw_text[:500])
@@ -264,6 +306,9 @@ class AgentLoopController:
 
         self._print(f'[Iter {iteration}] LLM action: modify — "{description}"')
 
+        if self._on_phase:
+            self._on_phase(iteration, "applying_commands")
+
         # Choose base network for modifications
         if mode == "fresh":
             base_net = self._base_network
@@ -303,6 +348,8 @@ class AgentLoopController:
             self._error_feedback = "Command errors:\n" + "\n".join(all_errors)
 
         # Run simulation
+        if self._on_phase:
+            self._on_phase(iteration, "running_simulation")
         self._print(f"[Iter {iteration}] Running {self._config.search.application} simulation...")
         sim_result = self._executor.run(
             modified_net,
@@ -311,6 +358,8 @@ class AgentLoopController:
         )
 
         # Parse results
+        if self._on_phase:
+            self._on_phase(iteration, "parsing_results")
         opflow = parse_simulation_result(sim_result)
         self._latest_opflow = opflow
 
