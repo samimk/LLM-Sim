@@ -6,6 +6,7 @@ import logging
 
 from llm_sim.engine.commands import ModCommand, parse_command
 from llm_sim.engine.executor import SimulationExecutor, SimulationResult
+from llm_sim.engine.journal import JournalEntry, SearchJournal
 from llm_sim.engine.modifier import ModificationReport, apply_modifications
 from llm_sim.engine.schema_description import command_schema_text
 from llm_sim.engine.validation import ValidationResult, validate_command
@@ -14,8 +15,10 @@ from llm_sim.parsers.matpower_model import MATNetwork
 logger = logging.getLogger("llm_sim.engine")
 
 __all__ = [
+    "JournalEntry",
     "ModCommand",
     "ModificationReport",
+    "SearchJournal",
     "SimulationExecutor",
     "SimulationResult",
     "ValidationResult",
