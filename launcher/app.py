@@ -773,9 +773,30 @@ def _render_analysis_tab(session):
                 f"Load: {entry.max_line_loading_pct:.1f}%"
             )
 
-    # PDF Report placeholder
+    # PDF Report
     st.subheader("📄 PDF Report")
-    st.info("PDF report generation will be available in Step 8.")
+
+    if st.button("Generate PDF Report"):
+        try:
+            from report_generator import ReportGenerator
+        except ModuleNotFoundError:
+            from launcher.report_generator import ReportGenerator
+
+        with st.spinner("Generating PDF report..."):
+            generator = ReportGenerator()
+            pdf_bytes = generator.generate(
+                session=session,
+                summary_text=st.session_state.summary_analysis,
+                base_result=st.session_state.base_opflow,
+                best_result=st.session_state.best_opflow,
+            )
+
+        st.download_button(
+            label="📥 Download Report",
+            data=pdf_bytes,
+            file_name=f"llm_sim_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+            mime="application/pdf",
+        )
 
 
 # ── Main Entry Point ─────────────────────────────────────────────────────────
