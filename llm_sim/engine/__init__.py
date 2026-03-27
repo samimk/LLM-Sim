@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from llm_sim.engine.agent_loop import AgentLoopController, SearchSession
 from llm_sim.engine.commands import ModCommand, parse_command
 from llm_sim.engine.executor import SimulationExecutor, SimulationResult
 from llm_sim.engine.journal import JournalEntry, SearchJournal
@@ -15,10 +16,12 @@ from llm_sim.parsers.matpower_model import MATNetwork
 logger = logging.getLogger("llm_sim.engine")
 
 __all__ = [
+    "AgentLoopController",
     "JournalEntry",
     "ModCommand",
     "ModificationReport",
     "SearchJournal",
+    "SearchSession",
     "SimulationExecutor",
     "SimulationResult",
     "ValidationResult",

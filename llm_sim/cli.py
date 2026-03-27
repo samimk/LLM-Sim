@@ -141,8 +141,11 @@ def _print_banner(cfg: AppConfig, goal: str) -> None:
 
 
 def run_search(cfg: AppConfig, goal: str) -> None:
-    """Placeholder for the search loop (implemented in Step 1.8)."""
-    logger.info("Search loop not yet implemented — see Step 1.8")
+    """Run the LLM-driven search loop."""
+    from llm_sim.engine.agent_loop import AgentLoopController
+
+    controller = AgentLoopController(cfg)
+    controller.run(cfg.search.base_case, goal)
 
 
 def main(argv: list[str] | None = None) -> None:
