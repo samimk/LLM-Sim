@@ -20,8 +20,9 @@ applications/*
 data/*
 !data/README.md
 
-# Local env script (template is tracked, actual config is local)
+# Local config files (templates are tracked, actual configs are local)
 configs/env_setup.sh
+configs/local_config.yaml
 
 # IDE
 .idea/

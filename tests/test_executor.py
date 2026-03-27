@@ -221,7 +221,8 @@ class TestExecutorLive:
         assert result.elapsed_seconds < exago.timeout
         assert result.exit_code == 0 or result.success  # MPI noise tolerance
 
-        # Save stdout for Step 1.6
-        sample_path = Path(__file__).resolve().parent / "sample_opflow_output.txt"
-        sample_path.write_text(result.stdout, encoding="utf-8")
-        print(f"\nSaved sample output to {sample_path} ({len(result.stdout)} bytes)")
+        # Save stdout for Step 1.6 (only if converged, to avoid overwriting good sample)
+        if "Optimal Solution Found" in result.stdout:
+            sample_path = Path(__file__).resolve().parent / "sample_opflow_output.txt"
+            sample_path.write_text(result.stdout, encoding="utf-8")
+            print(f"\nSaved sample output to {sample_path} ({len(result.stdout)} bytes)")

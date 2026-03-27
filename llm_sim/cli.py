@@ -73,6 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable detailed output",
     )
     parser.add_argument(
+        "--quiet",
+        action="store_true",
+        default=None,
+        help="Suppress per-iteration progress output (only show final summary)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Parse config and validate without running (for testing setup)",
@@ -140,11 +146,11 @@ def _print_banner(cfg: AppConfig, goal: str) -> None:
     print()
 
 
-def run_search(cfg: AppConfig, goal: str) -> None:
+def run_search(cfg: AppConfig, goal: str, quiet: bool = False) -> None:
     """Run the LLM-driven search loop."""
     from llm_sim.engine.agent_loop import AgentLoopController
 
-    controller = AgentLoopController(cfg)
+    controller = AgentLoopController(cfg, quiet=quiet)
     controller.run(cfg.search.base_case, goal)
 
 
@@ -175,8 +181,10 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("Dry-run complete — exiting.")
         return
 
-    _print_banner(cfg, args.goal)
-    run_search(cfg, args.goal)
+    quiet = getattr(args, "quiet", False) or False
+    if not quiet:
+        _print_banner(cfg, args.goal)
+    run_search(cfg, args.goal, quiet=quiet)
 
 
 if __name__ == "__main__":

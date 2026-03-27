@@ -26,6 +26,7 @@ from llm_sim.parsers import (
 )
 from llm_sim.parsers.matpower_model import MATNetwork
 from llm_sim.parsers.opflow_results import OPFLOWResult
+from llm_sim.prompts import build_system_prompt, build_user_prompt
 
 logger = logging.getLogger("llm_sim.engine.agent_loop")
 
@@ -45,16 +46,19 @@ class SearchSession:
     end_time: Optional[str] = None
     termination_reason: str = ""
     final_findings: Optional[dict] = None
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
 
 
 class AgentLoopController:
     """Drives the iterative LLM-driven search."""
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, quiet: bool = False) -> None:
         self._config = config
         self._backend: LLMBackend = create_backend(config.llm)
         self._executor = SimulationExecutor(config.exago, config.output)
         self._journal = SearchJournal()
+        self._quiet = quiet
 
         # State tracked across iterations
         self._base_network: Optional[MATNetwork] = None
@@ -63,6 +67,17 @@ class AgentLoopController:
         self._latest_results_text: Optional[str] = None
         self._error_feedback: Optional[str] = None
         self._consecutive_parse_failures = 0
+        self._total_prompt_tokens = 0
+        self._total_completion_tokens = 0
+
+    # ------------------------------------------------------------------
+    # Output helper
+    # ------------------------------------------------------------------
+
+    def _print(self, msg: str) -> None:
+        """Print progress message unless quiet mode is enabled."""
+        if not self._quiet:
+            print(msg)
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -70,6 +85,7 @@ class AgentLoopController:
 
     def run(self, base_case: Path, goal: str) -> SearchSession:
         """Execute the full search loop."""
+        session_start = time.monotonic()
         session = SearchSession(
             goal=goal,
             application=self._config.search.application,
@@ -85,8 +101,15 @@ class AgentLoopController:
         self._current_network = self._base_network
         net_summary_text = network_summary(self._base_network)
 
+        # Build system prompt once (static per session)
+        self._system_prompt = build_system_prompt(
+            command_schema=command_schema_text(),
+            network_summary=net_summary_text,
+            application=self._config.search.application,
+        )
+
         # 2. Run base case simulation (iteration 0)
-        print("[Iter 0] Running base case simulation...")
+        self._print("[Iter 0] Running base case simulation...")
         sim_result = self._executor.run(
             self._base_network,
             self._config.search.application,
@@ -106,7 +129,7 @@ class AgentLoopController:
                 llm_reasoning="Baseline run",
                 mode="fresh",
             )
-            print(
+            self._print(
                 f"[Iter 0] Base case: {opflow.convergence_status}, "
                 f"cost=${opflow.objective_value:,.2f}"
             )
@@ -124,29 +147,30 @@ class AgentLoopController:
             self._error_feedback = (
                 f"Base case simulation failed: {sim_result.error_message or 'unknown error'}"
             )
-            print(f"[Iter 0] Base case simulation FAILED: {sim_result.error_message}")
+            self._print(f"[Iter 0] Base case simulation FAILED: {sim_result.error_message}")
 
         # 3. Agent loop
         max_iter = self._config.search.max_iterations
         for iteration in range(1, max_iter + 1):
-            action_type, should_continue = self._iteration(
-                iteration, goal, net_summary_text
-            )
+            action_type, should_continue = self._iteration(iteration, goal)
             if not should_continue:
                 if not session.termination_reason:
                     session.termination_reason = "completed"
                 break
         else:
             session.termination_reason = "max_iterations"
-            print(f"\nMax iterations ({max_iter}) reached.")
+            self._print(f"\nMax iterations ({max_iter}) reached.")
 
         if not session.termination_reason:
             session.termination_reason = "completed"
 
         session.end_time = datetime.now().isoformat()
+        session.total_prompt_tokens = self._total_prompt_tokens
+        session.total_completion_tokens = self._total_completion_tokens
 
         # 4. Finalize session
-        self._finalize(session)
+        elapsed = time.monotonic() - session_start
+        self._finalize(session, elapsed)
         return session
 
     # ------------------------------------------------------------------
@@ -157,23 +181,35 @@ class AgentLoopController:
         self,
         iteration: int,
         goal: str,
-        net_summary_text: str,
     ) -> tuple[str, bool]:
         """Execute one iteration. Returns (action_type, should_continue)."""
-        print(
-            f"\n[Iter {iteration}] Sending prompt to "
+        self._print(
+            f"\n{'─' * 50}\n"
+            f"[Iter {iteration}] Sending prompt to "
             f"{self._backend.name()} ({self._config.llm.model})..."
         )
 
         # Assemble and send prompt
         system_prompt, user_prompt = self._assemble_prompt(
-            goal, net_summary_text, self._journal,
-            self._latest_results_text, self._error_feedback,
+            goal,
+            self._latest_results_text,
+            self._error_feedback,
         )
         self._error_feedback = None  # consumed
 
         response = self._backend.complete(system_prompt, user_prompt)
         logger.debug("LLM raw response: %s", response.raw_text[:500])
+
+        # Track tokens
+        pt = response.prompt_tokens or 0
+        ct = response.completion_tokens or 0
+        self._total_prompt_tokens += pt
+        self._total_completion_tokens += ct
+        if pt or ct:
+            self._print(
+                f"[Iter {iteration}] Tokens: {pt} prompt + {ct} completion "
+                f"(cumulative: ~{self._total_prompt_tokens + self._total_completion_tokens:,})"
+            )
 
         # Parse JSON from response
         if response.json_data is None:
@@ -184,9 +220,9 @@ class AgentLoopController:
                 _MAX_CONSECUTIVE_PARSE_FAILURES,
                 response.json_error,
             )
-            print(f"[Iter {iteration}] Failed to parse LLM response as JSON")
+            self._print(f"[Iter {iteration}] Failed to parse LLM response as JSON")
             if self._consecutive_parse_failures >= _MAX_CONSECUTIVE_PARSE_FAILURES:
-                print(f"[Iter {iteration}] Too many consecutive parse failures — aborting")
+                self._print(f"[Iter {iteration}] Too many consecutive parse failures — aborting")
                 return "error", False
             self._error_feedback = (
                 "Failed to parse JSON from your response. "
@@ -206,7 +242,7 @@ class AgentLoopController:
         elif action == "analyze":
             return self._handle_analyze(iteration, data)
         else:
-            print(f"[Iter {iteration}] Unknown action: '{action}'")
+            self._print(f"[Iter {iteration}] Unknown action: '{action}'")
             self._error_feedback = (
                 f"Unknown action '{action}'. "
                 f"Valid actions: modify, complete, analyze."
@@ -226,7 +262,7 @@ class AgentLoopController:
         raw_commands = data.get("commands", [])
         mode = data.get("mode", self._config.search.default_mode)
 
-        print(f'[Iter {iteration}] LLM action: modify — "{description}"')
+        self._print(f'[Iter {iteration}] LLM action: modify — "{description}"')
 
         # Choose base network for modifications
         if mode == "fresh":
@@ -258,7 +294,7 @@ class AgentLoopController:
             skipped_msgs = []
 
         all_errors = parse_errors + skipped_msgs
-        print(
+        self._print(
             f"[Iter {iteration}] Applied {applied_count} command(s), "
             f"{skipped_count} skipped"
         )
@@ -267,7 +303,7 @@ class AgentLoopController:
             self._error_feedback = "Command errors:\n" + "\n".join(all_errors)
 
         # Run simulation
-        print(f"[Iter {iteration}] Running {self._config.search.application} simulation...")
+        self._print(f"[Iter {iteration}] Running {self._config.search.application} simulation...")
         sim_result = self._executor.run(
             modified_net,
             self._config.search.application,
@@ -281,7 +317,7 @@ class AgentLoopController:
         if opflow is not None:
             self._latest_results_text = results_summary(opflow)
             self._current_network = modified_net
-            print(
+            self._print(
                 f"[Iter {iteration}] Simulation completed in "
                 f"{sim_result.elapsed_seconds:.2f}s — "
                 f"{opflow.convergence_status}, cost=${opflow.objective_value:,.2f}"
@@ -294,7 +330,7 @@ class AgentLoopController:
                 self._error_feedback += "\n" + feedback
             else:
                 self._error_feedback = feedback
-            print(
+            self._print(
                 f"[Iter {iteration}] Simulation FAILED in "
                 f"{sim_result.elapsed_seconds:.2f}s — {error_msg}"
             )
@@ -320,10 +356,9 @@ class AgentLoopController:
         reasoning = data.get("reasoning", "")
         summary_text = findings.get("summary", reasoning)
 
-        print(f"[Iter {iteration}] LLM action: complete")
-        print(f'[Iter {iteration}] Search completed: "{summary_text}"')
+        self._print(f"[Iter {iteration}] LLM action: complete")
+        self._print(f'[Iter {iteration}] Search completed: "{summary_text}"')
 
-        # Store findings for the session
         self._final_findings = findings
         return "complete", False
 
@@ -332,12 +367,10 @@ class AgentLoopController:
     ) -> tuple[str, bool]:
         """Handle an 'analyze' action from the LLM."""
         query = data.get("query", "")
-        reasoning = data.get("reasoning", "")
 
-        print(f'[Iter {iteration}] LLM action: analyze — "{query}"')
+        self._print(f'[Iter {iteration}] LLM action: analyze — "{query}"')
 
         result_text = self._run_analysis_query(query)
-        # Feed analysis results back as the latest results text
         self._latest_results_text = result_text
         logger.info("Analysis query result: %s", result_text[:300])
 
@@ -351,7 +384,6 @@ class AgentLoopController:
         opf = self._latest_opflow
         q = query.lower()
 
-        # Buses with voltage below X
         m = re.search(r"voltage\s+below\s+([\d.]+)", q)
         if m:
             threshold = float(m.group(1))
@@ -363,7 +395,6 @@ class AgentLoopController:
                 lines.append(f"  Bus {b.bus_id}: Vm={b.Vm:.4f} pu")
             return "\n".join(lines)
 
-        # Buses with voltage above X
         m = re.search(r"voltage\s+above\s+([\d.]+)", q)
         if m:
             threshold = float(m.group(1))
@@ -375,7 +406,6 @@ class AgentLoopController:
                 lines.append(f"  Bus {b.bus_id}: Vm={b.Vm:.4f} pu")
             return "\n".join(lines)
 
-        # Most loaded lines
         if "most loaded" in q or "loaded lines" in q or "line loading" in q:
             loaded = []
             for br in opf.branches:
@@ -392,7 +422,6 @@ class AgentLoopController:
                 )
             return "\n".join(lines)
 
-        # Generators
         if "generator" in q:
             lines = ["Generators:"]
             for g in sorted(opf.generators, key=lambda g: -g.Pg):
@@ -418,110 +447,68 @@ class AgentLoopController:
     def _assemble_prompt(
         self,
         goal: str,
-        network_summary_text: str,
-        journal: SearchJournal,
         latest_results_text: Optional[str],
         error_feedback: Optional[str] = None,
     ) -> tuple[str, str]:
         """Assemble the system prompt and user prompt for the LLM."""
-
-        # System prompt (static per session)
-        system_parts = [
-            "You are a power systems analysis agent. Your task is to iteratively "
-            "modify a power grid network and run simulations to achieve a given goal.",
-            "",
-            "You have access to the following modification commands:",
-            command_schema_text(),
-            "",
-            "Network information:",
-            network_summary_text,
-            "",
-            "You must respond with a JSON object. Three possible actions:",
-            "",
-            '1. MODIFY the network:',
-            '{',
-            '  "action": "modify",',
-            '  "reasoning": "Why I\'m making these changes...",',
-            '  "mode": "fresh" or "accumulative",',
-            '  "description": "Short description for the journal",',
-            '  "commands": [{"action": "...", ...}]',
-            '}',
-            "",
-            '2. COMPLETE the search (when goal is achieved or impossible):',
-            '{',
-            '  "action": "complete",',
-            '  "reasoning": "Why I\'m stopping...",',
-            '  "findings": {"summary": "...", "details": "..."}',
-            '}',
-            "",
-            '3. ANALYZE results (request specific data):',
-            '{',
-            '  "action": "analyze",',
-            '  "reasoning": "I need more information...",',
-            '  "query": "Show all buses with voltage below 0.95 pu"',
-            '}',
-            "",
-            "Rules:",
-            "- Be systematic: try small changes first, then adjust based on results.",
-            "- Explain your reasoning clearly in each response.",
-            "- Respect physical bounds (voltage limits, generator capacities, etc.).",
-            '- Use "fresh" mode to start from the base case, "accumulative" to build on last changes.',
-            "- When the goal is achieved or you determine it is infeasible, use the complete action.",
-        ]
-        system_prompt = "\n".join(system_parts)
-
-        # User prompt (refreshed each iteration)
-        user_parts = [f"Goal: {goal}"]
-
-        if len(journal) > 0:
-            user_parts.append("")
-            user_parts.append("=== Section C: Search Journal ===")
-            user_parts.append(journal.format_for_prompt())
-
-        if latest_results_text:
-            user_parts.append("")
-            user_parts.append("=== Section D: Latest Results ===")
-            user_parts.append(latest_results_text)
-
-        if error_feedback:
-            user_parts.append("")
-            user_parts.append("=== Error Feedback ===")
-            user_parts.append(error_feedback)
-
-        user_parts.append("")
-        user_parts.append(
-            "Based on the above, decide your next action. "
-            "Respond with a single JSON object."
+        journal_text = (
+            self._journal.format_for_prompt() if len(self._journal) > 0 else None
         )
-
-        user_prompt = "\n".join(user_parts)
-        return system_prompt, user_prompt
+        user_prompt = build_user_prompt(
+            goal=goal,
+            journal_text=journal_text,
+            results_text=latest_results_text,
+            error_feedback=error_feedback,
+        )
+        return self._system_prompt, user_prompt
 
     # ------------------------------------------------------------------
     # Finalization
     # ------------------------------------------------------------------
 
-    def _finalize(self, session: SearchSession) -> None:
+    def _finalize(self, session: SearchSession, elapsed_seconds: float) -> None:
         """Print summary and save journal."""
-        print()
-        print("=" * 50)
-        print("=== Search Session Summary ===")
-        print("=" * 50)
-
         stats = self._journal.summary_stats()
-        print(f"Iterations: {stats['total_iterations']}")
+
+        total_tokens = self._total_prompt_tokens + self._total_completion_tokens
+
+        # Always print the final summary (even in quiet mode)
+        print()
+        print("=" * 60)
+        print("  LLM-Sim Search Complete")
+        print("=" * 60)
+        print(f"  Goal:           {session.goal}")
+        print(f"  Application:    {session.application}")
+        print(f"  Backend:        {self._backend.name()} ({self._config.llm.model})")
+        print(
+            f"  Iterations:     {stats['total_iterations']} "
+            f"(of max {self._config.search.max_iterations})"
+        )
+        print(f"  Duration:       {elapsed_seconds:.1f} seconds")
+        if total_tokens:
+            print(
+                f"  Tokens used:    ~{total_tokens:,} "
+                f"(prompt: {self._total_prompt_tokens:,}, "
+                f"completion: {self._total_completion_tokens:,})"
+            )
+        print(f"  Termination:    {session.termination_reason}")
         if stats["best_objective"] is not None:
             print(
-                f"Best objective: ${stats['best_objective']:,.2f} "
+                f"  Best objective: ${stats['best_objective']:,.2f} "
                 f"(iteration {stats['best_iteration']})"
             )
         else:
-            print("Best objective: N/A (no feasible solution)")
-        print(
-            f"Feasible: {stats['feasible_count']} / "
-            f"Infeasible: {stats['infeasible_count']}"
-        )
-        print(f"Termination: {session.termination_reason}")
+            print("  Best objective: N/A (no feasible solution)")
+
+        # Print findings if complete
+        findings = getattr(self, "_final_findings", None)
+        if findings:
+            session.final_findings = findings
+            summary = findings.get("summary", "")
+            if summary:
+                print(f"\n  Findings: {summary}")
+
+        print("=" * 60)
 
         # Print journal table
         print()
@@ -540,12 +527,3 @@ class AgentLoopController:
             else:
                 self._journal.export_json(journal_path)
             print(f"\nJournal saved to: {journal_path}")
-
-        # Print findings if complete
-        findings = getattr(self, "_final_findings", None)
-        if findings:
-            session.final_findings = findings
-            print(f"\nFindings: {findings.get('summary', '')}")
-            details = findings.get("details", "")
-            if details:
-                print(f"Details: {details}")
