@@ -2,8 +2,10 @@
 
 import streamlit as st
 import time
+from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
 import plotly.graph_objects as go
 
 try:
@@ -13,6 +15,10 @@ try:
         FUTURE_APPLICATIONS, MODES,
     )
     from session_manager import SessionManager
+    from charts import (
+        convergence_chart, voltage_range_chart, voltage_profile_chart,
+        generator_dispatch_chart, line_loading_chart,
+    )
 except ModuleNotFoundError:
     from launcher.config_builder import (
         scan_data_files, load_example_goals, build_config_overrides,
@@ -20,6 +26,10 @@ except ModuleNotFoundError:
         FUTURE_APPLICATIONS, MODES,
     )
     from launcher.session_manager import SessionManager
+    from launcher.charts import (
+        convergence_chart, voltage_range_chart, voltage_profile_chart,
+        generator_dispatch_chart, line_loading_chart,
+    )
 
 from llm_sim.parsers import parse_matpower, network_summary
 
@@ -493,36 +503,279 @@ def render_live_monitor():
         st.rerun()
 
 
-# ── State C: Results (Skeleton) ──────────────────────────────────────────────
+# ── State C: Results ─────────────────────────────────────────────────────────
+
+def _reset_for_new_search():
+    """Reset session state for a new search."""
+    st.session_state.search_finished = False
+    st.session_state.search_session = None
+    st.session_state.search_error = None
+    st.session_state.summary_analysis = None
+    st.session_state.iteration_log = []
+    st.session_state.base_opflow = None
+    st.session_state.best_opflow = None
+    st.rerun()
+
 
 def render_results():
-    """Render results view. Full implementation in Step 7."""
-    st.header("✅ Search Complete")
-
+    """Render the full results view with three tabs."""
     session = st.session_state.search_session
     if session is None:
         if st.session_state.search_error:
             st.error(f"Search failed: {st.session_state.search_error}")
         else:
             st.warning("No session data available.")
+        if st.button("🔄 Start New Search"):
+            _reset_for_new_search()
         return
 
-    st.write(f"**Goal:** {session.goal}")
-    st.write(f"**Termination:** {session.termination_reason}")
+    st.header("✅ Search Complete")
+
+    tab1, tab2, tab3 = st.tabs([
+        "📊 Overview", "🔍 Detailed Results", "📝 Analysis & Report",
+    ])
+
+    with tab1:
+        _render_overview_tab(session)
+
+    with tab2:
+        _render_detailed_tab(session)
+
+    with tab3:
+        _render_analysis_tab(session)
+
+    # New Search button at the bottom
+    st.markdown("---")
+    if st.button("🔄 Start New Search", type="primary"):
+        _reset_for_new_search()
+
+
+# ── Tab 1: Overview ──────────────────────────────────────────────────────────
+
+def _render_overview_tab(session):
+    """Render the Overview tab with summary and convergence chart."""
     stats = session.journal.summary_stats()
-    st.write(f"**Iterations:** {stats['total_iterations']}")
+
+    # Goal
+    st.markdown(f"**Goal:** {session.goal}")
+
+    # Summary metrics row
+    start = datetime.fromisoformat(session.start_time)
+    end = datetime.fromisoformat(session.end_time) if session.end_time else datetime.now()
+    duration = end - start
+    duration_str = f"{duration.total_seconds():.0f}s"
+    total_tokens = session.total_prompt_tokens + session.total_completion_tokens
+
+    mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+    mc1.metric("Application", f"{session.application}")
+    mc2.metric("Iterations", f"{stats['total_iterations']}")
+    mc3.metric("Duration", duration_str)
+    mc4.metric("Termination", session.termination_reason)
+    mc5.metric("Tokens", f"{total_tokens:,}" if total_tokens > 0 else "—")
+
+    # Best objective with improvement vs base
+    base_entry = session.journal.entries[0] if session.journal.entries else None
     if stats["best_objective"] is not None:
-        st.write(
-            f"**Best objective:** ${stats['best_objective']:,.2f} "
-            f"(iteration {stats['best_iteration']})"
-        )
+        if base_entry and base_entry.objective_value is not None and base_entry.objective_value != 0:
+            improvement = base_entry.objective_value - stats["best_objective"]
+            pct = improvement / base_entry.objective_value * 100
+            st.metric(
+                "Best Objective",
+                f"${stats['best_objective']:,.2f}",
+                delta=f"-{pct:.1f}% vs base case",
+                delta_color="inverse",
+            )
+        else:
+            st.metric("Best Objective", f"${stats['best_objective']:,.2f}")
 
-    st.info("📊 Full results visualization coming in Step 7.")
+    # Base Case vs Best Solution comparison table
+    st.subheader("Base Case vs Best Solution")
 
-    if st.button("🔄 Start New Search"):
-        st.session_state.search_finished = False
-        st.session_state.search_session = None
-        st.rerun()
+    best_entry = None
+    if stats.get("best_iteration") is not None:
+        for e in session.journal.entries:
+            if e.iteration == stats["best_iteration"]:
+                best_entry = e
+                break
+
+    def _fmt_cost(v):
+        return f"${v:,.2f}" if v is not None else "—"
+
+    def _fmt_f(v, fmt=".1f"):
+        return f"{v:{fmt}}" if v and v > 0 else "—"
+
+    def _change(base_v, best_v, fmt=".1f", suffix=""):
+        if base_v is None or best_v is None or base_v == 0:
+            return "—"
+        diff = best_v - base_v
+        return f"{diff:+{fmt}}{suffix}"
+
+    rows = []
+    b = base_entry
+    s = best_entry
+    if b:
+        rows.append({
+            "Metric": "Objective (cost)",
+            "Base Case": _fmt_cost(b.objective_value),
+            "Best Solution": _fmt_cost(s.objective_value) if s else "N/A",
+            "Change": _change(b.objective_value, s.objective_value, ",.2f") if s else "—",
+        })
+        rows.append({
+            "Metric": "Total Generation (MW)",
+            "Base Case": _fmt_f(b.total_gen_mw),
+            "Best Solution": _fmt_f(s.total_gen_mw) if s else "N/A",
+            "Change": _change(b.total_gen_mw, s.total_gen_mw, ".1f", " MW") if s else "—",
+        })
+        rows.append({
+            "Metric": "Voltage Min (p.u.)",
+            "Base Case": _fmt_f(b.voltage_min, ".4f"),
+            "Best Solution": _fmt_f(s.voltage_min, ".4f") if s else "N/A",
+            "Change": _change(b.voltage_min, s.voltage_min, ".4f") if s else "—",
+        })
+        rows.append({
+            "Metric": "Voltage Max (p.u.)",
+            "Base Case": _fmt_f(b.voltage_max, ".4f"),
+            "Best Solution": _fmt_f(s.voltage_max, ".4f") if s else "N/A",
+            "Change": _change(b.voltage_max, s.voltage_max, ".4f") if s else "—",
+        })
+        rows.append({
+            "Metric": "Max Line Loading (%)",
+            "Base Case": _fmt_f(b.max_line_loading_pct),
+            "Best Solution": _fmt_f(s.max_line_loading_pct) if s else "N/A",
+            "Change": _change(b.max_line_loading_pct, s.max_line_loading_pct, ".1f", " pp") if s else "—",
+        })
+        rows.append({
+            "Metric": "Violations",
+            "Base Case": str(b.violations_count),
+            "Best Solution": str(s.violations_count) if s else "N/A",
+            "Change": str(s.violations_count - b.violations_count) if s else "—",
+        })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No iteration data available for comparison.")
+
+    if not best_entry and stats["best_objective"] is None:
+        st.warning("No feasible solution was found during the search.")
+
+    # Convergence chart
+    st.subheader("Convergence")
+    fig = convergence_chart(session.journal, highlight_best=True, height=450)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Voltage range chart
+    fig_v = voltage_range_chart(session.journal, height=350)
+    st.plotly_chart(fig_v, use_container_width=True)
+
+
+# ── Tab 2: Detailed Results ──────────────────────────────────────────────────
+
+def _render_detailed_tab(session):
+    """Render the Detailed Results tab with comparison charts and history table."""
+    base_opflow = st.session_state.base_opflow
+    best_opflow = st.session_state.best_opflow
+
+    # Voltage Profile
+    fig_vp = voltage_profile_chart(base_opflow, best_opflow)
+    if fig_vp is not None:
+        st.plotly_chart(fig_vp, use_container_width=True)
+    else:
+        st.info("Voltage profile comparison not available (missing simulation results).")
+
+    # Generator Dispatch and Line Loading side by side
+    col1, col2 = st.columns(2)
+    with col1:
+        fig_gen = generator_dispatch_chart(base_opflow, best_opflow)
+        if fig_gen:
+            st.plotly_chart(fig_gen, use_container_width=True)
+        else:
+            st.info("Generator dispatch comparison not available.")
+
+    with col2:
+        fig_ll = line_loading_chart(base_opflow, best_opflow)
+        if fig_ll:
+            st.plotly_chart(fig_ll, use_container_width=True)
+        else:
+            st.info("Line loading comparison not available.")
+
+    # Iteration History Table
+    st.subheader("📋 Iteration History")
+    rows = []
+    for e in session.journal.entries:
+        rows.append({
+            "Iteration": e.iteration,
+            "Description": e.description[:50],
+            "Cost ($)": f"${e.objective_value:,.2f}" if e.objective_value is not None else "FAILED",
+            "Feasible": "✅" if e.feasible else "❌",
+            "V_min (p.u.)": f"{e.voltage_min:.3f}" if e.voltage_min > 0 else "—",
+            "V_max (p.u.)": f"{e.voltage_max:.3f}" if e.voltage_max > 0 else "—",
+            "Max Load (%)": f"{e.max_line_loading_pct:.1f}" if e.max_line_loading_pct > 0 else "—",
+            "Gen (MW)": f"{e.total_gen_mw:.1f}" if e.total_gen_mw > 0 else "—",
+            "Time (s)": f"{e.elapsed_seconds:.1f}",
+        })
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No iterations recorded.")
+
+
+# ── Tab 3: Analysis & Report ─────────────────────────────────────────────────
+
+def _render_analysis_tab(session):
+    """Render the Analysis tab with LLM summary and report generation."""
+
+    # LLM-Generated Summary Analysis
+    st.subheader("🧠 LLM Analysis")
+
+    if st.session_state.summary_analysis is not None:
+        st.markdown(st.session_state.summary_analysis)
+    else:
+        st.info("Click below to generate an analytical summary of the search using the LLM.")
+        if st.button("Generate Analysis", type="primary"):
+            manager = st.session_state.session_manager
+            if manager is not None:
+                with st.spinner("Generating summary analysis..."):
+                    summary = manager.get_summary_analysis(session)
+                    st.session_state.summary_analysis = summary
+                st.rerun()
+            else:
+                st.error("Session manager not available.")
+
+    # Search Narrative (auto-generated from journal, no LLM call)
+    st.subheader("📖 Search Narrative")
+
+    for entry in session.journal.entries:
+        if entry.iteration == 0:
+            st.markdown(
+                "**Iteration 0 (Base Case):** Initial simulation of the unmodified network."
+            )
+            if entry.objective_value is not None:
+                st.markdown(
+                    f"Base cost: ${entry.objective_value:,.2f}, "
+                    f"voltage range: {entry.voltage_min:.3f}\u2013{entry.voltage_max:.3f} p.u."
+                )
+        else:
+            status = "✅" if entry.feasible else "❌"
+            obj_str = (
+                f"${entry.objective_value:,.2f}"
+                if entry.objective_value is not None else "FAILED"
+            )
+            st.markdown(
+                f"**Iteration {entry.iteration}** {status}: {entry.description}"
+            )
+            if entry.llm_reasoning:
+                truncated = entry.llm_reasoning[:300]
+                if len(entry.llm_reasoning) > 300:
+                    truncated += "..."
+                st.markdown(f"> *{truncated}*")
+            st.markdown(
+                f"Result: {obj_str} | "
+                f"V: {entry.voltage_min:.3f}\u2013{entry.voltage_max:.3f} p.u. | "
+                f"Load: {entry.max_line_loading_pct:.1f}%"
+            )
+
+    # PDF Report placeholder
+    st.subheader("📄 PDF Report")
+    st.info("PDF report generation will be available in Step 8.")
 
 
 # ── Main Entry Point ─────────────────────────────────────────────────────────
