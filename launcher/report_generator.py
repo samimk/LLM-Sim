@@ -88,6 +88,47 @@ def _export_chart_image(fig, width_px: int = 800, height_px: int = 400) -> bytes
         return None
 
 
+# ── Markdown Table Helpers ────────────────────────────────────────────────────
+
+def _is_separator_row(line: str) -> bool:
+    """Check if a line is a markdown table separator (e.g., |------|------|)."""
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return False
+    content = stripped.replace("|", "").replace(" ", "").replace("-", "").replace(":", "")
+    return len(content) == 0 and "-" in stripped
+
+
+def _parse_markdown_table(text: str) -> list[list[str]] | None:
+    """Parse a markdown table from text into a list of rows.
+
+    Returns None if the text is not a markdown table.
+    The separator row (with dashes) is excluded.
+    """
+    lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
+    if len(lines) < 2:
+        return None
+
+    # All lines must contain |
+    if not all("|" in l for l in lines):
+        return None
+
+    rows = []
+    for line in lines:
+        if _is_separator_row(line):
+            continue
+        cells = [c.strip() for c in line.split("|")]
+        # Strip empty cells from leading/trailing |
+        if cells and cells[0] == "":
+            cells = cells[1:]
+        if cells and cells[-1] == "":
+            cells = cells[:-1]
+        if cells:
+            rows.append(cells)
+
+    return rows if len(rows) >= 2 else None
+
+
 # ── Report Generator ─────────────────────────────────────────────────────────
 
 class ReportGenerator:
@@ -98,6 +139,36 @@ class ReportGenerator:
         self._font = "DejaVuSans" if _FONT_REGISTERED else "Helvetica"
         self._font_bold = "DejaVuSans-Bold" if _FONT_REGISTERED else "Helvetica-Bold"
         self._styles = self._build_styles()
+
+    @staticmethod
+    def _escape_xml(text: str) -> str:
+        """Escape XML special characters for ReportLab Paragraphs."""
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def _is_ascii_art(self, text: str) -> bool:
+        """Check if text contains ASCII art (box-drawing characters, etc.)."""
+        art_chars = set("┤├┬┴┼─│┐┘┌└╭╮╯╰✗✓✕✔▉▊▋▌▍▎▏")
+        char_count = sum(1 for c in text if c in art_chars)
+        return char_count > 5
+
+    def _preprocess_text(self, text: str) -> str:
+        """Preprocess markdown text to normalize paragraph boundaries."""
+        lines = text.split("\n")
+        result = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                if result and result[-1].strip():
+                    result.append("")
+                result.append(line)
+                result.append("")
+            elif stripped == "---":
+                if result and result[-1].strip():
+                    result.append("")
+                result.append("")
+            else:
+                result.append(line)
+        return "\n".join(result)
 
     def _build_styles(self) -> dict[str, ParagraphStyle]:
         """Create custom paragraph styles."""
@@ -129,6 +200,12 @@ class ReportGenerator:
             "caption": ParagraphStyle(
                 "caption", fontName=self._font, fontSize=9,
                 textColor=colors.grey, spaceAfter=4,
+            ),
+            "bullet": ParagraphStyle(
+                "bullet", fontName=self._font, fontSize=10,
+                spaceAfter=3, leading=14,
+                leftIndent=15, bulletIndent=5,
+                bulletFontName=self._font, bulletFontSize=10,
             ),
         }
 
@@ -170,6 +247,172 @@ class ReportGenerator:
 
         doc.build(story)
         return buffer.getvalue()
+
+    # ── Markdown / Summary Text Rendering ────────────────────────────────
+
+    def _build_markdown_table(self, rows: list[list[str]]) -> Table:
+        """Convert parsed markdown table rows into a styled ReportLab Table."""
+        s = self._styles
+        n_cols = max(len(r) for r in rows)
+        padded = [r + [""] * (n_cols - len(r)) for r in rows]
+
+        header_style = ParagraphStyle(
+            "table_header", parent=s["body_small"],
+            fontName=self._font_bold, fontSize=8,
+            textColor=colors.white, leading=10,
+        )
+        cell_style = ParagraphStyle(
+            "table_cell", parent=s["body_small"],
+            fontName=self._font, fontSize=8, leading=10,
+        )
+
+        table_data = []
+        for row_idx, row in enumerate(padded):
+            style = header_style if row_idx == 0 else cell_style
+            table_data.append([
+                Paragraph(self._escape_xml(cell), style) for cell in row
+            ])
+
+        available_width = 17 * cm
+        col_width = available_width / n_cols
+        table = Table(table_data, colWidths=[col_width] * n_cols)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3498db")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        return table
+
+    def _render_summary_text(self, text: str) -> list:
+        """Render summary text, converting markdown tables to ReportLab Tables."""
+        text = self._preprocess_text(text)
+        elements: list = []
+        lines = text.split("\n")
+        current_block: list[str] = []
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
+
+            # Check for code block start
+            if line.strip().startswith("```"):
+                if current_block:
+                    elements.extend(self._render_text_block("\n".join(current_block)))
+                    current_block = []
+
+                code_lines = []
+                i += 1
+                while i < len(lines) and not lines[i].strip().startswith("```"):
+                    code_lines.append(lines[i])
+                    i += 1
+                if i < len(lines):
+                    i += 1  # Skip closing ```
+
+                code_text = "\n".join(code_lines).strip()
+                if code_text and not self._is_ascii_art(code_text):
+                    escaped = self._escape_xml(code_text)
+                    code_style = ParagraphStyle(
+                        "code_block", fontName="Courier", fontSize=7,
+                        spaceAfter=6, leading=9,
+                        backColor=colors.HexColor("#f5f5f5"),
+                        leftIndent=10, rightIndent=10,
+                        spaceBefore=4,
+                    )
+                    elements.append(Paragraph(escaped.replace("\n", "<br/>"), code_style))
+                continue
+
+            # Check if this line starts a markdown table
+            if "|" in line and i + 1 < len(lines) and _is_separator_row(lines[i + 1]):
+                if current_block:
+                    elements.extend(self._render_text_block("\n".join(current_block)))
+                    current_block = []
+
+                table_lines = [line]
+                i += 1
+                while i < len(lines) and "|" in lines[i]:
+                    table_lines.append(lines[i])
+                    i += 1
+
+                rows = _parse_markdown_table("\n".join(table_lines))
+                if rows:
+                    elements.append(Spacer(1, 0.3 * cm))
+                    elements.append(self._build_markdown_table(rows))
+                    elements.append(Spacer(1, 0.3 * cm))
+                continue
+
+            current_block.append(line)
+            i += 1
+
+        if current_block:
+            elements.extend(self._render_text_block("\n".join(current_block)))
+
+        return elements
+
+    def _render_text_block(self, text: str) -> list:
+        """Render a non-table text block as Paragraph flowables."""
+        s = self._styles
+        elements: list = []
+
+        for para in text.split("\n\n"):
+            para = para.strip()
+            if not para:
+                continue
+
+            # Skip ASCII art
+            if self._is_ascii_art(para):
+                continue
+
+            # Headings
+            if para.startswith("### "):
+                heading_text = self._escape_xml(para[4:].strip())
+                elements.append(Paragraph(heading_text, s["heading2"]))
+            elif para.startswith("## "):
+                heading_text = self._escape_xml(para[3:].strip())
+                elements.append(Paragraph(heading_text, s["heading1"]))
+            elif para.startswith("# "):
+                heading_text = self._escape_xml(para[2:].strip())
+                elements.append(Paragraph(heading_text, s["heading1"]))
+            elif para.startswith("```"):
+                # Code blocks that weren't caught at line level
+                code_lines = para.split("\n")
+                code_content = "\n".join(
+                    l for l in code_lines if not l.strip().startswith("```")
+                )
+                if code_content.strip() and not self._is_ascii_art(code_content):
+                    escaped = self._escape_xml(code_content)
+                    code_style = ParagraphStyle(
+                        "code", fontName="Courier", fontSize=8,
+                        spaceAfter=6, leading=10,
+                        backColor=colors.HexColor("#f5f5f5"),
+                        leftIndent=10,
+                    )
+                    elements.append(Paragraph(escaped.replace("\n", "<br/>"), code_style))
+            else:
+                # Check for bullet lists
+                lines = para.split("\n")
+                bullet_lines = [l for l in lines if l.strip().startswith("- ")]
+                if len(bullet_lines) > len(lines) / 2:
+                    for line in lines:
+                        line = line.strip()
+                        if line.startswith("- "):
+                            bullet_text = self._escape_xml(line[2:].strip())
+                            elements.append(Paragraph(f"\u2022 {bullet_text}", s["bullet"]))
+                        elif line:
+                            elements.append(Paragraph(self._escape_xml(line), s["body"]))
+                    continue
+
+                # Regular paragraph
+                cleaned = para.replace("**", "")
+                cleaned = self._escape_xml(cleaned)
+                cleaned = " ".join(cleaned.split("\n"))
+                elements.append(Paragraph(cleaned, s["body"]))
+
+        return elements
 
     # ── Title Page ───────────────────────────────────────────────────────
 
@@ -238,12 +481,7 @@ class ReportGenerator:
         if summary_text:
             elements.append(Spacer(1, 0.5 * cm))
             elements.append(Paragraph("Analysis", s["heading2"]))
-            for para in summary_text.split("\n\n"):
-                para = para.strip()
-                if para:
-                    # Escape XML special characters for ReportLab
-                    para = para.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    elements.append(Paragraph(para, s["body"]))
+            elements.extend(self._render_summary_text(summary_text))
 
         return elements
 

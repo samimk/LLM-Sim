@@ -62,8 +62,10 @@ class SessionManager:
             goal: Natural-language search goal.
             config_path: Path to base config YAML. Defaults to configs/default_config.yaml.
         """
-        if self.is_running():
+        if self._thread is not None and self._thread.is_alive():
             raise RuntimeError("A search is already running.")
+        # Reset controller reference from any previous run
+        self._controller = None
 
         # Reset state
         self._session = None

@@ -1,35 +1,36 @@
 """LLM-Sim Launcher — Streamlit GUI for LLM-driven power grid optimization."""
 
+# ── Path Setup (must be first) ───────────────────────────────────────────────
+# Ensure the project root is on sys.path so that llm_sim can be imported.
+# Streamlit adds launcher/ (the script's directory) to sys.path, but not
+# the project root where the llm_sim package lives.
+import sys
+from pathlib import Path
+
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+# ── Imports ──────────────────────────────────────────────────────────────────
+
+import os
 import streamlit as st
 import time
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 
-try:
-    from config_builder import (
-        scan_data_files, load_example_goals, build_config_overrides,
-        get_default_config_path, DEFAULT_MODELS, BACKENDS, APPLICATIONS,
-        FUTURE_APPLICATIONS, MODES,
-    )
-    from session_manager import SessionManager
-    from charts import (
-        convergence_chart, voltage_range_chart, voltage_profile_chart,
-        generator_dispatch_chart, line_loading_chart,
-    )
-except ModuleNotFoundError:
-    from launcher.config_builder import (
-        scan_data_files, load_example_goals, build_config_overrides,
-        get_default_config_path, DEFAULT_MODELS, BACKENDS, APPLICATIONS,
-        FUTURE_APPLICATIONS, MODES,
-    )
-    from launcher.session_manager import SessionManager
-    from launcher.charts import (
-        convergence_chart, voltage_range_chart, voltage_profile_chart,
-        generator_dispatch_chart, line_loading_chart,
-    )
+from config_builder import (
+    scan_data_files, load_example_goals, build_config_overrides,
+    get_default_config_path, get_project_root, DEFAULT_MODELS, BACKENDS,
+    APPLICATIONS, FUTURE_APPLICATIONS, MODES,
+)
+from session_manager import SessionManager
+from charts import (
+    convergence_chart, voltage_range_chart, voltage_profile_chart,
+    generator_dispatch_chart, line_loading_chart,
+)
 
 from llm_sim.parsers import parse_matpower, network_summary
 
@@ -92,6 +93,19 @@ def get_network_info(file_path: str) -> dict:
 def start_search(base_case_path, goal, backend, model, temperature,
                  application, mode, max_iterations):
     """Initialize and start a new search."""
+    # Validate base case still exists
+    if not Path(base_case_path).exists():
+        st.error(f"Base case file no longer exists: {base_case_path}")
+        return
+
+    # Warn about missing API keys
+    if backend == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
+        st.warning("ANTHROPIC_API_KEY environment variable not set. "
+                   "The search may fail if the key is not available.")
+    elif backend == "openai" and not os.environ.get("OPENAI_API_KEY"):
+        st.warning("OPENAI_API_KEY environment variable not set. "
+                   "The search may fail if the key is not available.")
+
     overrides = build_config_overrides(
         base_case=str(base_case_path),
         backend=backend,
@@ -240,6 +254,16 @@ def render_sidebar() -> dict:
                 if manager is not None:
                     manager.stop_search()
                 st.session_state.stop_requested = True
+            if st.session_state.stop_requested:
+                st.warning("Stop requested — waiting for current iteration to finish...")
+
+        # ── Session History ────────────────────────────────────────────────
+        if st.session_state.completed_sessions:
+            st.header("📋 History")
+            for i, sess_info in enumerate(st.session_state.completed_sessions):
+                st.caption(
+                    f"{i + 1}. {sess_info['goal'][:40]} — {sess_info['best_obj']}"
+                )
 
     return {
         "base_case": selected_file,
@@ -281,6 +305,15 @@ def render_welcome(base_case: Path | None):
         "Select a base case in the sidebar, choose your LLM backend, "
         "write a search goal, and click **Start Search**."
     )
+
+    # Environment info
+    with st.expander("ℹ️ Environment Info"):
+        st.caption(f"Project root: {get_project_root()}")
+        st.caption(f"Config: {get_default_config_path()}")
+        st.caption(f"Data files: {len(scan_data_files())} found")
+        for key in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]:
+            status = "Set" if os.environ.get(key) else "Not set"
+            st.caption(f"{key}: {status}")
 
     # Network summary card if a base case is selected
     if base_case is not None:
@@ -335,6 +368,16 @@ def render_live_monitor():
                 st.session_state.search_error = manager.get_error()
                 st.session_state.base_opflow = manager.get_base_opflow()
                 st.session_state.best_opflow = manager.get_best_opflow()
+                # Append to session history
+                session = manager.get_session()
+                if session:
+                    stats = session.journal.summary_stats()
+                    st.session_state.completed_sessions.append({
+                        "goal": session.goal[:50],
+                        "best_obj": f"${stats['best_objective']:,.2f}" if stats["best_objective"] else "N/A",
+                        "iterations": stats["total_iterations"],
+                        "termination": session.termination_reason,
+                    })
                 st.rerun()
                 return
             elif update["type"] == "iteration":
@@ -352,6 +395,19 @@ def render_live_monitor():
                 )
             elif update["type"] == "error":
                 st.session_state.search_error = update["message"]
+
+    # Check if thread died unexpectedly
+    if manager is not None and not manager.is_running() and not st.session_state.search_finished:
+        st.session_state.search_running = False
+        st.session_state.search_finished = True
+        st.session_state.search_session = manager.get_session()
+        st.session_state.search_error = manager.get_error()
+        st.session_state.base_opflow = manager.get_base_opflow()
+        st.session_state.best_opflow = manager.get_best_opflow()
+        if not st.session_state.search_error:
+            st.session_state.search_error = "Search thread terminated unexpectedly."
+        st.rerun()
+        return
 
     # 2. Header
     st.header("🔄 Search in Progress...")
@@ -434,7 +490,7 @@ def render_live_monitor():
             height=280,
             margin=dict(l=20, r=20, t=40, b=20),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # Voltage Range Chart
         iters_v = [e["iteration"] for e in st.session_state.iteration_log
@@ -474,7 +530,7 @@ def render_live_monitor():
             margin=dict(l=20, r=20, t=40, b=20),
             showlegend=False,
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
 
         # Progress Stats
         st.markdown("---")
@@ -650,7 +706,7 @@ def _render_overview_tab(session):
             "Best Solution": str(s.violations_count) if s else "N/A",
             "Change": str(s.violations_count - b.violations_count) if s else "—",
         })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:
         st.info("No iteration data available for comparison.")
 
@@ -660,11 +716,11 @@ def _render_overview_tab(session):
     # Convergence chart
     st.subheader("Convergence")
     fig = convergence_chart(session.journal, highlight_best=True, height=450)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Voltage range chart
     fig_v = voltage_range_chart(session.journal, height=350)
-    st.plotly_chart(fig_v, use_container_width=True)
+    st.plotly_chart(fig_v, width="stretch")
 
 
 # ── Tab 2: Detailed Results ──────────────────────────────────────────────────
@@ -677,7 +733,7 @@ def _render_detailed_tab(session):
     # Voltage Profile
     fig_vp = voltage_profile_chart(base_opflow, best_opflow)
     if fig_vp is not None:
-        st.plotly_chart(fig_vp, use_container_width=True)
+        st.plotly_chart(fig_vp, width="stretch")
     else:
         st.info("Voltage profile comparison not available (missing simulation results).")
 
@@ -686,14 +742,14 @@ def _render_detailed_tab(session):
     with col1:
         fig_gen = generator_dispatch_chart(base_opflow, best_opflow)
         if fig_gen:
-            st.plotly_chart(fig_gen, use_container_width=True)
+            st.plotly_chart(fig_gen, width="stretch")
         else:
             st.info("Generator dispatch comparison not available.")
 
     with col2:
         fig_ll = line_loading_chart(base_opflow, best_opflow)
         if fig_ll:
-            st.plotly_chart(fig_ll, use_container_width=True)
+            st.plotly_chart(fig_ll, width="stretch")
         else:
             st.info("Line loading comparison not available.")
 
@@ -713,7 +769,7 @@ def _render_detailed_tab(session):
             "Time (s)": f"{e.elapsed_seconds:.1f}",
         })
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:
         st.info("No iterations recorded.")
 
@@ -742,6 +798,9 @@ def _render_analysis_tab(session):
 
     # Search Narrative (auto-generated from journal, no LLM call)
     st.subheader("📖 Search Narrative")
+
+    if not session.journal.entries:
+        st.info("No iterations were recorded during this search.")
 
     for entry in session.journal.entries:
         if entry.iteration == 0:
@@ -782,21 +841,26 @@ def _render_analysis_tab(session):
         except ModuleNotFoundError:
             from launcher.report_generator import ReportGenerator
 
+        pdf_bytes = None
         with st.spinner("Generating PDF report..."):
-            generator = ReportGenerator()
-            pdf_bytes = generator.generate(
-                session=session,
-                summary_text=st.session_state.summary_analysis,
-                base_result=st.session_state.base_opflow,
-                best_result=st.session_state.best_opflow,
-            )
+            try:
+                generator = ReportGenerator()
+                pdf_bytes = generator.generate(
+                    session=session,
+                    summary_text=st.session_state.summary_analysis,
+                    base_result=st.session_state.base_opflow,
+                    best_result=st.session_state.best_opflow,
+                )
+            except Exception as e:
+                st.error(f"Failed to generate PDF: {e}")
 
-        st.download_button(
-            label="📥 Download Report",
-            data=pdf_bytes,
-            file_name=f"llm_sim_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-            mime="application/pdf",
-        )
+        if pdf_bytes:
+            st.download_button(
+                label="📥 Download Report",
+                data=pdf_bytes,
+                file_name=f"llm_sim_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                mime="application/pdf",
+            )
 
 
 # ── Main Entry Point ─────────────────────────────────────────────────────────
