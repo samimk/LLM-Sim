@@ -215,6 +215,7 @@ class ReportGenerator:
         summary_text: str | None = None,
         base_result: OPFLOWResult | None = None,
         best_result: OPFLOWResult | None = None,
+        goal_classification: dict | None = None,
     ) -> bytes:
         """Generate a PDF report and return it as bytes.
 
@@ -223,10 +224,16 @@ class ReportGenerator:
             summary_text: Optional LLM-generated summary analysis.
             base_result: Base case OPFLOW results (for charts).
             best_result: Best feasible OPFLOW results (for charts).
+            goal_classification: Optional dict with goal_type, best_iteration,
+                best_iteration_rationale from LLM analysis.
 
         Returns:
             PDF file contents as bytes.
         """
+        gc = goal_classification
+        best_iter_override = gc.get("best_iteration") if gc else None
+        goal_type = gc.get("goal_type") if gc else None
+
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
@@ -235,13 +242,20 @@ class ReportGenerator:
         )
 
         story: list = []
-        story.extend(self._build_title_page(session))
+        story.extend(self._build_title_page(session, goal_type=goal_type))
         story.append(PageBreak())
-        story.extend(self._build_executive_summary(session, summary_text))
+        story.extend(self._build_executive_summary(
+            session, summary_text, goal_classification=gc,
+        ))
         story.append(PageBreak())
-        story.extend(self._build_convergence_section(session))
+        story.extend(self._build_convergence_section(
+            session, best_iteration=best_iter_override,
+        ))
         story.append(PageBreak())
-        story.extend(self._build_comparison_section(session, base_result, best_result))
+        story.extend(self._build_comparison_section(
+            session, base_result, best_result, goal_type=goal_type,
+            best_iteration_override=best_iter_override,
+        ))
         story.append(PageBreak())
         story.extend(self._build_iteration_log(session))
 
@@ -416,13 +430,18 @@ class ReportGenerator:
 
     # ── Title Page ───────────────────────────────────────────────────────
 
-    def _build_title_page(self, session: SearchSession) -> list:
+    def _build_title_page(
+        self, session: SearchSession, goal_type: str | None = None,
+    ) -> list:
         s = self._styles
         elements: list = []
         elements.append(Spacer(1, 6 * cm))
         elements.append(Paragraph("LLM-Sim Search Report", s["title"]))
+        if goal_type:
+            type_label = goal_type.replace("_", " ").title()
+            elements.append(Paragraph(f"Search Type: {type_label}", s["caption"]))
         elements.append(Spacer(1, 1 * cm))
-        elements.append(Paragraph(session.goal, s["subtitle"]))
+        elements.append(Paragraph(self._escape_xml(session.goal), s["subtitle"]))
         elements.append(Spacer(1, 2 * cm))
 
         start = datetime.fromisoformat(session.start_time)
@@ -442,13 +461,23 @@ class ReportGenerator:
     # ── Executive Summary ────────────────────────────────────────────────
 
     def _build_executive_summary(
-        self, session: SearchSession, summary_text: str | None,
+        self,
+        session: SearchSession,
+        summary_text: str | None,
+        goal_classification: dict | None = None,
     ) -> list:
         s = self._styles
         elements: list = []
         elements.append(Paragraph("Executive Summary", s["heading1"]))
 
-        stats = session.journal.summary_stats()
+        gc = goal_classification
+        best_iter_override = gc.get("best_iteration") if gc else None
+        goal_type = gc.get("goal_type") if gc else None
+
+        stats = session.journal.summary_stats(
+            best_iteration_override=best_iter_override,
+            goal_type=goal_type,
+        )
         start = datetime.fromisoformat(session.start_time)
         end = datetime.fromisoformat(session.end_time) if session.end_time else datetime.now()
         duration = end - start
@@ -475,7 +504,12 @@ class ReportGenerator:
             lines.insert(0, "No feasible solution found.")
 
         for line in lines:
-            elements.append(Paragraph(line, s["body"]))
+            elements.append(Paragraph(self._escape_xml(line), s["body"]))
+
+        # Goal achievement rationale
+        if gc and gc.get("best_iteration_rationale"):
+            rationale = self._escape_xml(gc["best_iteration_rationale"])
+            elements.append(Paragraph(f"Goal achievement: {rationale}", s["body"]))
 
         # LLM Analysis
         if summary_text:
@@ -487,12 +521,14 @@ class ReportGenerator:
 
     # ── Convergence Section ──────────────────────────────────────────────
 
-    def _build_convergence_section(self, session: SearchSession) -> list:
+    def _build_convergence_section(
+        self, session: SearchSession, best_iteration: int | None = None,
+    ) -> list:
         s = self._styles
         elements: list = []
         elements.append(Paragraph("Convergence Analysis", s["heading1"]))
 
-        stats = session.journal.summary_stats()
+        stats = session.journal.summary_stats(best_iteration_override=best_iteration)
 
         # Auto-generated text
         n = stats["total_iterations"]
@@ -501,13 +537,16 @@ class ReportGenerator:
             base_entry = session.journal.entries[0] if session.journal.entries else None
             if base_entry and base_entry.objective_value and base_entry.objective_value != 0:
                 pct = (base_entry.objective_value - stats["best_objective"]) / base_entry.objective_value * 100
-                text += f" A {pct:.1f}% cost reduction was achieved from the base case."
-            text += f" The best feasible objective of ${stats['best_objective']:,.2f} was found at iteration {stats['best_iteration']}."
+                text += f" A {pct:.1f}% cost change was observed from the base case."
+            text += f" The best solution (objective ${stats['best_objective']:,.2f}) was found at iteration {stats['best_iteration']}."
         elements.append(Paragraph(text, s["body"]))
         elements.append(Spacer(1, 0.5 * cm))
 
         # Convergence chart
-        fig = convergence_chart(session.journal, highlight_best=True, height=350)
+        fig = convergence_chart(
+            session.journal, highlight_best=True, height=350,
+            best_iteration=best_iteration,
+        )
         img_bytes = _export_chart_image(fig, width_px=700, height_px=350)
         if img_bytes:
             elements.append(Image(io.BytesIO(img_bytes), width=16 * cm, height=8 * cm))
@@ -530,13 +569,26 @@ class ReportGenerator:
         session: SearchSession,
         base_result: OPFLOWResult | None,
         best_result: OPFLOWResult | None,
+        goal_type: str | None = None,
+        best_iteration_override: int | None = None,
     ) -> list:
         s = self._styles
         elements: list = []
-        elements.append(Paragraph("Results Comparison", s["heading1"]))
+
+        heading = "Results Comparison"
+        if goal_type == "feasibility_boundary":
+            heading = "Base Case vs Maximum Feasible Configuration"
+        elif goal_type == "constraint_satisfaction":
+            heading = "Base Case vs Best Constraint-Satisfying Configuration"
+        elif goal_type == "parameter_exploration":
+            heading = "Base Case vs Selected Exploration Result"
+        elements.append(Paragraph(heading, s["heading1"]))
 
         # Build comparison table from journal entries
-        stats = session.journal.summary_stats()
+        stats = session.journal.summary_stats(
+            best_iteration_override=best_iteration_override,
+            goal_type=goal_type,
+        )
         base_entry = session.journal.entries[0] if session.journal.entries else None
         best_entry = None
         if stats.get("best_iteration") is not None:

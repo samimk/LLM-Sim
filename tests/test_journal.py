@@ -325,3 +325,54 @@ class TestSummaryStats:
         assert stats["best_iteration"] is None
         assert stats["feasible_count"] == 0
         assert stats["infeasible_count"] == 2
+
+    def test_goal_type_included(self):
+        j = SearchJournal()
+        j.add_entry(_make_entry(1, obj=1000.0))
+
+        stats = j.summary_stats(goal_type="feasibility_boundary")
+        assert stats["goal_type"] == "feasibility_boundary"
+
+        stats_none = j.summary_stats()
+        assert stats_none["goal_type"] is None
+
+    def test_best_iteration_override(self):
+        """Override should select a specific iteration as best, not lowest cost."""
+        j = SearchJournal()
+        j.add_entry(_make_entry(0, obj=27000.0))  # base case, lowest cost
+        j.add_entry(_make_entry(1, obj=30000.0))
+        j.add_entry(_make_entry(2, obj=35000.0))
+        j.add_entry(_make_entry(3, obj=43000.0))  # highest cost but best for boundary search
+
+        # Default: lowest cost wins
+        stats_default = j.summary_stats()
+        assert stats_default["best_iteration"] == 0
+        assert stats_default["best_objective"] == 27000.0
+
+        # Override: iteration 3 is the best answer
+        stats_override = j.summary_stats(best_iteration_override=3)
+        assert stats_override["best_iteration"] == 3
+        assert stats_override["best_objective"] == 43000.0
+
+    def test_best_iteration_override_invalid(self):
+        """Invalid override iteration falls back to default cost heuristic."""
+        j = SearchJournal()
+        j.add_entry(_make_entry(1, obj=5000.0))
+        j.add_entry(_make_entry(2, obj=3000.0))
+
+        stats = j.summary_stats(best_iteration_override=99)
+        # Should fall back to default (lowest cost)
+        assert stats["best_iteration"] == 2
+        assert stats["best_objective"] == 3000.0
+
+    def test_best_iteration_override_infeasible_entry(self):
+        """Override can select an infeasible entry (for boundary searches)."""
+        j = SearchJournal()
+        j.add_entry(_make_entry(0, obj=27000.0))
+        j.add_entry(_make_entry(1, obj=35000.0))
+        j.add_entry(_make_entry(2, feasible=False))  # infeasible
+
+        # Override selects the infeasible entry
+        stats = j.summary_stats(best_iteration_override=2)
+        assert stats["best_iteration"] == 2
+        assert stats["best_objective"] is None  # infeasible has no objective

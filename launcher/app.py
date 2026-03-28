@@ -61,6 +61,7 @@ def init_session_state():
         "summary_analysis": None,
         "base_opflow": None,
         "best_opflow": None,
+        "goal_classification": None,
         "completed_sessions": [],
         "selected_goal_label": "Custom",
     }
@@ -131,6 +132,7 @@ def start_search(base_case_path, goal, backend, model, temperature,
     st.session_state.summary_analysis = None
     st.session_state.base_opflow = None
     st.session_state.best_opflow = None
+    st.session_state.goal_classification = None
     st.session_state.stop_requested = False
 
     try:
@@ -368,6 +370,7 @@ def render_live_monitor():
                 st.session_state.search_error = manager.get_error()
                 st.session_state.base_opflow = manager.get_base_opflow()
                 st.session_state.best_opflow = manager.get_best_opflow()
+                st.session_state.goal_classification = manager.get_goal_classification()
                 # Append to session history
                 session = manager.get_session()
                 if session:
@@ -404,6 +407,7 @@ def render_live_monitor():
         st.session_state.search_error = manager.get_error()
         st.session_state.base_opflow = manager.get_base_opflow()
         st.session_state.best_opflow = manager.get_best_opflow()
+        st.session_state.goal_classification = manager.get_goal_classification()
         if not st.session_state.search_error:
             st.session_state.search_error = "Search thread terminated unexpectedly."
         st.rerun()
@@ -570,6 +574,7 @@ def _reset_for_new_search():
     st.session_state.iteration_log = []
     st.session_state.base_opflow = None
     st.session_state.best_opflow = None
+    st.session_state.goal_classification = None
     st.rerun()
 
 
@@ -610,7 +615,15 @@ def render_results():
 
 def _render_overview_tab(session):
     """Render the Overview tab with summary and convergence chart."""
-    stats = session.journal.summary_stats()
+    # Determine goal classification override
+    gc = st.session_state.goal_classification
+    best_iter_override = gc.get("best_iteration") if gc else None
+    goal_type = gc.get("goal_type") if gc else None
+
+    stats = session.journal.summary_stats(
+        best_iteration_override=best_iter_override,
+        goal_type=goal_type,
+    )
 
     # Goal
     st.markdown(f"**Goal:** {session.goal}")
@@ -644,8 +657,19 @@ def _render_overview_tab(session):
         else:
             st.metric("Best Objective", f"${stats['best_objective']:,.2f}")
 
+    # Show goal achievement if available
+    if gc and gc.get("best_iteration_rationale"):
+        st.info(f"**Goal achievement:** {gc['best_iteration_rationale']}")
+
     # Base Case vs Best Solution comparison table
-    st.subheader("Base Case vs Best Solution")
+    comparison_label = "Base Case vs Best Solution"
+    if goal_type == "feasibility_boundary":
+        comparison_label = "Base Case vs Maximum Feasible Configuration"
+    elif goal_type == "constraint_satisfaction":
+        comparison_label = "Base Case vs Best Constraint-Satisfying Configuration"
+    elif goal_type == "parameter_exploration":
+        comparison_label = "Base Case vs Selected Exploration Result"
+    st.subheader(comparison_label)
 
     best_entry = None
     if stats.get("best_iteration") is not None:
@@ -715,7 +739,10 @@ def _render_overview_tab(session):
 
     # Convergence chart
     st.subheader("Convergence")
-    fig = convergence_chart(session.journal, highlight_best=True, height=450)
+    fig = convergence_chart(
+        session.journal, highlight_best=True, height=450,
+        best_iteration=best_iter_override,
+    )
     st.plotly_chart(fig, width="stretch")
 
     # Voltage range chart
@@ -784,6 +811,13 @@ def _render_analysis_tab(session):
 
     if st.session_state.summary_analysis is not None:
         st.markdown(st.session_state.summary_analysis)
+        # Show goal classification if available
+        gc = st.session_state.goal_classification
+        if gc:
+            with st.expander("Goal Classification (from LLM)"):
+                st.markdown(f"**Goal type:** `{gc.get('goal_type', 'unknown')}`")
+                st.markdown(f"**Best iteration:** {gc.get('best_iteration', 'N/A')}")
+                st.markdown(f"**Rationale:** {gc.get('best_iteration_rationale', '')}")
     else:
         st.info("Click below to generate an analytical summary of the search using the LLM.")
         if st.button("Generate Analysis", type="primary"):
@@ -792,6 +826,13 @@ def _render_analysis_tab(session):
                 with st.spinner("Generating summary analysis..."):
                     summary = manager.get_summary_analysis(session)
                     st.session_state.summary_analysis = summary
+                    # Capture goal classification and update best_opflow
+                    gc = manager.get_goal_classification()
+                    st.session_state.goal_classification = gc
+                    if gc is not None:
+                        best_opflow = manager.get_best_opflow()
+                        if best_opflow is not None:
+                            st.session_state.best_opflow = best_opflow
                 st.rerun()
             else:
                 st.error("Session manager not available.")
@@ -850,6 +891,7 @@ def _render_analysis_tab(session):
                     summary_text=st.session_state.summary_analysis,
                     base_result=st.session_state.base_opflow,
                     best_result=st.session_state.best_opflow,
+                    goal_classification=st.session_state.goal_classification,
                 )
             except Exception as e:
                 st.error(f"Failed to generate PDF: {e}")

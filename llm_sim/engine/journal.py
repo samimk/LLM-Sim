@@ -240,8 +240,25 @@ class SearchJournal:
     # Summary statistics
     # ------------------------------------------------------------------
 
-    def summary_stats(self) -> dict:
-        """Compute summary statistics across all entries."""
+    def summary_stats(
+        self,
+        best_iteration_override: int | None = None,
+        goal_type: str | None = None,
+    ) -> dict:
+        """Compute summary statistics across all entries.
+
+        Args:
+            best_iteration_override: If provided, use this iteration as "best"
+                instead of the default lowest-cost heuristic. This allows the
+                LLM's goal classification to select the most relevant iteration.
+            goal_type: Optional goal type string (e.g. "cost_minimization",
+                "feasibility_boundary") to include in the returned dict.
+
+        Returns:
+            Dict with keys: total_iterations, best_objective, best_iteration,
+            feasible_count, infeasible_count, objective_trend,
+            voltage_range_trend, goal_type.
+        """
         if not self._entries:
             return {
                 "total_iterations": 0,
@@ -251,18 +268,27 @@ class SearchJournal:
                 "infeasible_count": 0,
                 "objective_trend": [],
                 "voltage_range_trend": [],
+                "goal_type": goal_type,
             }
 
         feasible = [e for e in self._entries if e.feasible and e.objective_value is not None]
         infeasible_count = sum(1 for e in self._entries if not e.feasible)
 
-        if feasible:
-            best = min(feasible, key=lambda e: e.objective_value)  # type: ignore[arg-type]
-            best_objective = best.objective_value
-            best_iteration = best.iteration
+        # Use override if provided and valid
+        if best_iteration_override is not None:
+            override_entry = None
+            for e in self._entries:
+                if e.iteration == best_iteration_override:
+                    override_entry = e
+                    break
+            if override_entry is not None:
+                best_objective = override_entry.objective_value
+                best_iteration = override_entry.iteration
+            else:
+                # Invalid override — fall back to default
+                best_objective, best_iteration = self._best_by_cost(feasible)
         else:
-            best_objective = None
-            best_iteration = None
+            best_objective, best_iteration = self._best_by_cost(feasible)
 
         return {
             "total_iterations": len(self._entries),
@@ -274,4 +300,15 @@ class SearchJournal:
             "voltage_range_trend": [
                 (e.voltage_min, e.voltage_max) for e in self._entries
             ],
+            "goal_type": goal_type,
         }
+
+    @staticmethod
+    def _best_by_cost(
+        feasible: list[JournalEntry],
+    ) -> tuple[float | None, int | None]:
+        """Select the best iteration by lowest cost (default heuristic)."""
+        if feasible:
+            best = min(feasible, key=lambda e: e.objective_value)  # type: ignore[arg-type]
+            return best.objective_value, best.iteration
+        return None, None

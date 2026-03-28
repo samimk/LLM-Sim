@@ -59,6 +59,7 @@ def convergence_chart(
     journal: SearchJournal,
     highlight_best: bool = True,
     height: int = 400,
+    best_iteration: int | None = None,
 ) -> go.Figure:
     """Line+scatter chart of objective value across iterations.
 
@@ -66,6 +67,8 @@ def convergence_chart(
         journal: SearchJournal with iteration entries.
         highlight_best: Annotate the best feasible solution.
         height: Chart height in pixels.
+        best_iteration: If provided, annotate this iteration as "best"
+            instead of the lowest-cost feasible iteration.
 
     Returns:
         Plotly Figure.
@@ -130,17 +133,32 @@ def convergence_chart(
             hoverinfo="text",
         ))
 
-    # Annotate best feasible solution
+    # Annotate best solution
     if highlight_best and iters_valid:
-        feasible_pairs = [
-            (it, val) for it, val, c in zip(iters_valid, vals_valid, colors_valid)
-            if c == COLORS["feasible"]
-        ]
-        if feasible_pairs:
-            best_iter, best_val = min(feasible_pairs, key=lambda p: p[1])
+        best_iter_found = None
+        best_val_found = None
+
+        if best_iteration is not None:
+            # Use the provided override
+            for it, val in zip(iters_valid, vals_valid):
+                if it == best_iteration:
+                    best_iter_found = it
+                    best_val_found = val
+                    break
+
+        if best_iter_found is None:
+            # Fall back to lowest-cost feasible
+            feasible_pairs = [
+                (it, val) for it, val, c in zip(iters_valid, vals_valid, colors_valid)
+                if c == COLORS["feasible"]
+            ]
+            if feasible_pairs:
+                best_iter_found, best_val_found = min(feasible_pairs, key=lambda p: p[1])
+
+        if best_iter_found is not None and best_val_found is not None:
             fig.add_annotation(
-                x=best_iter, y=best_val,
-                text=f"Best: ${best_val:,.2f} (iter {best_iter})",
+                x=best_iter_found, y=best_val_found,
+                text=f"Best: ${best_val_found:,.2f} (iter {best_iter_found})",
                 showarrow=True, arrowhead=2,
                 ax=40, ay=-40,
                 font=dict(size=11, color=COLORS["best_solution"]),
