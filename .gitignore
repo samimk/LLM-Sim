@@ -30,4 +30,4 @@ configs/local_config.yaml
 *.swp
 *.swo
 .claude/
-prompts/
+/prompts/

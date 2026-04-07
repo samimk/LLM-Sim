@@ -70,7 +70,7 @@ class OpenAIBackend(LLMBackend):
                 "model": self._config.model,
                 "messages": messages,
                 "temperature": temp,
-                "max_tokens": self._config.max_tokens,
+                "max_completion_tokens": self._config.max_tokens,
             }
             if use_json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
