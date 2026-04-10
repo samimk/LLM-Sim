@@ -40,6 +40,35 @@ The search journal tracks every iteration, providing the LLM with a history of w
 - **Optimization** — "Minimize generation cost while keeping all voltages above 0.95 pu"
 - **Analysis** — "Report the top 5 most congested transmission lines"
 
+## Interactive Steering
+
+While a search is running, you can inject steering directives from the terminal (CLI) or the GUI — without stopping and restarting the search.
+
+### CLI steering commands
+
+When running interactively (stdin is a TTY), a background listener accepts these commands:
+
+| Input | Action |
+|-------|--------|
+| `<text>` | Inject an **augment** directive — the LLM considers it alongside the original goal |
+| `replace: <text>` | Inject a **replace** directive — the LLM treats it as a new primary goal |
+| `pause` | Pause the search at the next iteration boundary |
+| `resume` | Resume a paused search |
+| `stop` | Request graceful termination |
+| `status` | Print current pause state and the last 3 injected directives |
+
+**Augment vs. replace semantics:**
+- **Augment** — adds a constraint or preference to the current goal without discarding it. Example: `Focus on buses in area 3`.
+- **Replace** — supersedes the current goal entirely. Example: `replace: Minimize voltage violations, ignore cost`.
+
+Entering a directive while paused automatically resumes the search.
+
+### GUI steering panel
+
+The Streamlit launcher exposes the same capabilities via a steering panel in the live monitor. See [launcher/README.md](launcher/README.md) for details.
+
+---
+
 ## Usage
 
 ### Shell script (recommended for interactive use)

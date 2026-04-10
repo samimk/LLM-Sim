@@ -35,6 +35,7 @@ class JournalEntry:
     mode: str
     elapsed_seconds: float
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    steering_directive: Optional[str] = None  # Active steering directive at this iteration
 
 
 class SearchJournal:
@@ -56,6 +57,7 @@ class SearchJournal:
         sim_elapsed: float,
         llm_reasoning: str,
         mode: str,
+        steering_directive: Optional[str] = None,
     ) -> JournalEntry:
         """Create and append a journal entry from OPFLOW results.
 
@@ -79,6 +81,7 @@ class SearchJournal:
                 llm_reasoning=llm_reasoning,
                 mode=mode,
                 elapsed_seconds=sim_elapsed,
+                steering_directive=steering_directive,
             )
         else:
             entry = JournalEntry(
@@ -97,8 +100,40 @@ class SearchJournal:
                 llm_reasoning=llm_reasoning,
                 mode=mode,
                 elapsed_seconds=sim_elapsed,
+                steering_directive=steering_directive,
             )
 
+        self._entries.append(entry)
+        return entry
+
+    def add_analysis(
+        self,
+        iteration: int,
+        query: str,
+        result_summary: str,
+    ) -> JournalEntry:
+        """Record an 'analyze' action in the journal.
+
+        Creates a lightweight entry (no simulation data) so analyze actions
+        appear in the search history.
+        """
+        entry = JournalEntry(
+            iteration=iteration,
+            description=f"Analysis: {query[:80]}",
+            commands=[],
+            objective_value=None,
+            feasible=False,
+            convergence_status="ANALYSIS",
+            violations_count=0,
+            voltage_min=0.0,
+            voltage_max=0.0,
+            max_line_loading_pct=0.0,
+            total_gen_mw=0.0,
+            total_load_mw=0.0,
+            llm_reasoning=result_summary,
+            mode="analyze",
+            elapsed_seconds=0.0,
+        )
         self._entries.append(entry)
         return entry
 
@@ -122,7 +157,10 @@ class SearchJournal:
     @staticmethod
     def _format_row(e: JournalEntry) -> str:
         """Format a single entry as a table row."""
-        desc = e.description[:35].ljust(35)
+        desc_text = e.description
+        if e.steering_directive:
+            desc_text += f" [Steered: {e.steering_directive[:50]}]"
+        desc = desc_text[:35].ljust(35)
         if e.feasible and e.objective_value is not None:
             cost = f"{e.objective_value:>12,.2f}"
             feas = "Yes"
@@ -199,6 +237,8 @@ class SearchJournal:
             for cmd in e.commands:
                 parts.append(f"  {json.dumps(cmd)}")
             parts.append(f"LLM reasoning: {e.llm_reasoning}")
+            if e.steering_directive:
+                parts.append(f"Steering directive: {e.steering_directive}")
 
         return "\n".join(parts)
 
@@ -223,7 +263,7 @@ class SearchJournal:
             "feasible", "convergence_status", "violations_count",
             "voltage_min", "voltage_max", "max_line_loading_pct",
             "total_gen_mw", "total_load_mw", "llm_reasoning",
-            "mode", "elapsed_seconds", "timestamp",
+            "mode", "elapsed_seconds", "timestamp", "steering_directive",
         ]
 
         with open(path, "w", newline="", encoding="utf-8") as f:

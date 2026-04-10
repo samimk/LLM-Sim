@@ -7,10 +7,8 @@ objects for visualization.
 
 from __future__ import annotations
 
-import json
 import logging
 import queue
-import re
 import threading
 from pathlib import Path
 from typing import Optional
@@ -18,6 +16,7 @@ from typing import Optional
 from llm_sim.backends import create_backend
 from llm_sim.config import load_config
 from llm_sim.engine.agent_loop import AgentLoopController, SearchSession
+from llm_sim.engine.goal_classifier import build_classification_prompts, parse_goal_classification
 from llm_sim.engine.journal import JournalEntry
 from llm_sim.parsers.opflow_results import OPFLOWResult
 
@@ -97,6 +96,7 @@ class SessionManager:
             quiet=True,
             on_iteration=self._on_iteration_callback,
             on_phase=self._on_phase_callback,
+            on_pause_state=self._on_pause_state_callback,
         )
         self._controller = controller
 
@@ -169,6 +169,33 @@ class SessionManager:
         """Get the OPFLOW result for a specific iteration."""
         return self._opflow_by_iteration.get(iteration)
 
+    def inject_steering(self, directive: str, mode: str = "augment") -> None:
+        """Forward a steering directive to the running controller."""
+        if self._controller is not None:
+            self._controller.inject_steering(directive, mode)
+
+    def pause_search(self) -> None:
+        """Pause the search at the next iteration boundary."""
+        if self._controller is not None:
+            self._controller.pause()
+
+    def resume_search(self) -> None:
+        """Resume a paused search."""
+        if self._controller is not None:
+            self._controller.resume()
+
+    def is_paused(self) -> bool:
+        """Check if the search is currently paused."""
+        if self._controller is not None:
+            return self._controller.is_paused()
+        return False
+
+    def get_steering_history(self) -> list[dict]:
+        """Return the list of steering directives injected so far."""
+        if self._controller is not None:
+            return self._controller.steering_history
+        return []
+
     def get_summary_analysis(self, session: SearchSession) -> str:
         """Generate an analytical summary of the completed search via a final LLM call.
 
@@ -181,121 +208,36 @@ class SessionManager:
         Returns:
             Summary analysis text from the LLM.
         """
+        # If the CLI path already ran classification during _finalize(), reuse it.
+        if session.analysis_text is not None:
+            if session.goal_classification is not None:
+                self._goal_classification = session.goal_classification
+            return session.analysis_text
+
         try:
             backend = create_backend(session.config.llm)
-
-            system_prompt = (
-                "You are an expert power systems analyst reviewing the results of an "
-                "LLM-driven optimization search performed using ExaGO's OPFLOW application. "
-                "Provide a structured analytical summary of the search."
-            )
-
             stats = session.journal.summary_stats()
             total_tokens = session.total_prompt_tokens + session.total_completion_tokens
 
-            user_prompt = (
-                f"Search goal: {session.goal}\n"
-                f"Termination reason: {session.termination_reason}\n"
-                f"Total iterations: {stats['total_iterations']}\n"
-                f"Feasible: {stats['feasible_count']} / "
-                f"Infeasible: {stats['infeasible_count']}\n"
-                f"Lowest-cost feasible: {stats['best_objective']} "
-                f"(iteration {stats['best_iteration']})\n"
-                f"Tokens used: ~{total_tokens:,}\n"
-                f"\n"
-                f"=== Detailed Journal ===\n"
-                f"{session.journal.format_detailed()}\n"
-                f"\n"
-                f"Please provide:\n"
-                f"\n"
-                f"1. A structured analysis covering:\n"
-                f"   a. Overall assessment — was the goal achieved?\n"
-                f"   b. Search strategy analysis — what approach was taken?\n"
-                f"   c. Convergence behavior — monotonic improvement, exploration, plateaus?\n"
-                f"   d. Key modifications that had the most impact\n"
-                f"   e. Potential further improvements\n"
-                f"   f. Recommendations\n"
-                f"\n"
-                f"2. At the END of your response, include a JSON block wrapped in\n"
-                f"   ```json ... ``` with the following structure:\n"
-                f"\n"
-                f"```json\n"
-                f'{{\n'
-                f'  "goal_type": "<one of: cost_minimization | feasibility_boundary | constraint_satisfaction | parameter_exploration>",\n'
-                f'  "best_iteration": <int — the iteration number that best answers the user\'s goal>,\n'
-                f'  "best_iteration_rationale": "<one sentence explaining why this iteration is the best answer>"\n'
-                f'}}\n'
-                f"```\n"
-                f"\n"
-                f"Goal type definitions:\n"
-                f"- cost_minimization: User wants to minimize generation cost. Best = lowest cost among feasible.\n"
-                f"- feasibility_boundary: User wants to find the limit of a parameter before infeasibility. Best = feasible iteration closest to the boundary.\n"
-                f"- constraint_satisfaction: User wants to satisfy specific constraints. Best = iteration that best satisfies them.\n"
-                f"- parameter_exploration: User is exploring what-if scenarios. Best = most informative feasible iteration.\n"
+            system_prompt, user_prompt = build_classification_prompts(
+                goal=session.goal,
+                termination_reason=session.termination_reason,
+                stats=stats,
+                journal_formatted=session.journal.format_detailed(),
+                total_tokens=total_tokens,
             )
 
             response = backend.complete(system_prompt, user_prompt)
             raw_text = response.raw_text
 
-            # Parse goal classification JSON from the response
-            self._goal_classification = self._parse_goal_classification(
-                raw_text, session
-            )
+            valid_iters = {e.iteration for e in session.journal.entries}
+            self._goal_classification = parse_goal_classification(raw_text, valid_iters)
 
             return raw_text
 
         except Exception as exc:
             logger.warning("Failed to generate summary analysis: %s", exc)
             return f"Summary analysis could not be generated: {exc}"
-
-    def _parse_goal_classification(
-        self, text: str, session: SearchSession
-    ) -> dict | None:
-        """Extract the goal classification JSON block from the LLM response.
-
-        Falls back to cost_minimization defaults if parsing fails.
-        """
-        # Try to find ```json ... ``` block
-        match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if not match:
-            # Try bare JSON object with goal_type key
-            match = re.search(
-                r'\{\s*"goal_type"\s*:.*?\}', text, re.DOTALL
-            )
-
-        if match:
-            try:
-                json_str = match.group(1) if match.lastindex else match.group(0)
-                data = json.loads(json_str)
-
-                goal_type = data.get("goal_type", "cost_minimization")
-                best_iter = data.get("best_iteration")
-                rationale = data.get("best_iteration_rationale", "")
-
-                # Validate best_iteration is a valid iteration number
-                valid_iters = {e.iteration for e in session.journal.entries}
-                if best_iter not in valid_iters:
-                    logger.warning(
-                        "LLM returned invalid best_iteration=%s, "
-                        "falling back to cost heuristic",
-                        best_iter,
-                    )
-                    return None
-
-                logger.info(
-                    "Goal classification: type=%s, best_iter=%s, rationale=%s",
-                    goal_type, best_iter, rationale,
-                )
-                return {
-                    "goal_type": goal_type,
-                    "best_iteration": best_iter,
-                    "best_iteration_rationale": rationale,
-                }
-            except (json.JSONDecodeError, TypeError, ValueError) as exc:
-                logger.warning("Failed to parse goal classification JSON: %s", exc)
-
-        logger.info("No goal classification found in analysis response; using defaults")
-        return None
 
     # ------------------------------------------------------------------
     # Private methods
@@ -366,4 +308,11 @@ class SessionManager:
             "type": "phase",
             "iteration": iteration,
             "phase": phase_name,
+        })
+
+    def _on_pause_state_callback(self, paused: bool) -> None:
+        """Called by AgentLoopController when pause state changes."""
+        self._update_queue.put({
+            "type": "pause_state",
+            "paused": paused,
         })

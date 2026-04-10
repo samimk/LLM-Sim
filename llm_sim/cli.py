@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import threading
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
@@ -146,11 +147,75 @@ def _print_banner(cfg: AppConfig, goal: str) -> None:
     print()
 
 
+def _start_stdin_listener(controller) -> None:
+    """Start a background daemon thread that reads steering directives from stdin.
+
+    Only called when stdin is a TTY (interactive terminal).
+    """
+    def _listen():
+        print(
+            "\n[Steering] Interactive steering active. Commands:\n"
+            "  <text>         → inject directive (augment mode)\n"
+            "  replace: <text>→ inject directive (replace mode)\n"
+            "  pause          → pause at next iteration boundary\n"
+            "  resume         → resume paused search\n"
+            "  stop           → request graceful stop\n"
+            "  status         → show current steering state\n"
+        )
+        while True:
+            try:
+                line = input()
+            except EOFError:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            lower = line.lower()
+            if lower == "pause":
+                controller.pause()
+                print("[Steering] Paused. Type 'resume' to continue, or enter a directive to auto-resume.")
+            elif lower == "resume":
+                controller.resume()
+                print("[Steering] Resumed.")
+            elif lower == "stop":
+                controller.request_stop()
+                print("[Steering] Stop requested.")
+            elif lower == "status":
+                directives = controller.steering_history
+                print(
+                    f"[Steering] Status: "
+                    f"paused={controller.is_paused()}, "
+                    f"directives_injected={len(directives)}"
+                )
+                for d in directives[-3:]:
+                    print(f"  iter {d['iteration']} [{d['mode'].upper()}]: {d['directive'][:60]}")
+            elif lower.startswith("replace:"):
+                directive = line[8:].strip()
+                if directive:
+                    controller.inject_steering(directive, mode="replace")
+                    if controller.is_paused():
+                        controller.resume()
+                    print(f"[Steering] Directive queued: '{directive[:60]}' (mode=replace)")
+            else:
+                controller.inject_steering(line, mode="augment")
+                if controller.is_paused():
+                    controller.resume()
+                print(f"[Steering] Directive queued: '{line[:60]}' (mode=augment)")
+
+    t = threading.Thread(target=_listen, name="steering-listener", daemon=True)
+    t.start()
+
+
 def run_search(cfg: AppConfig, goal: str, quiet: bool = False) -> None:
     """Run the LLM-driven search loop."""
     from llm_sim.engine.agent_loop import AgentLoopController
 
     controller = AgentLoopController(cfg, quiet=quiet)
+
+    # Start interactive steering listener if running in a TTY
+    if sys.stdin.isatty():
+        _start_stdin_listener(controller)
+
     controller.run(cfg.search.base_case, goal)
 
 

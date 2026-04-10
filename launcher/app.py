@@ -64,6 +64,8 @@ def init_session_state():
         "goal_classification": None,
         "completed_sessions": [],
         "selected_goal_label": "Custom",
+        "steering_history": [],
+        "search_paused": False,
     }
     for key, default in defaults.items():
         if key not in st.session_state:
@@ -134,6 +136,8 @@ def start_search(base_case_path, goal, backend, model, temperature,
     st.session_state.best_opflow = None
     st.session_state.goal_classification = None
     st.session_state.stop_requested = False
+    st.session_state.steering_history = []
+    st.session_state.search_paused = False
 
     try:
         manager.start_search(config_overrides=overrides, goal=goal)
@@ -396,6 +400,8 @@ def render_live_monitor():
                 st.session_state.current_phase = phase_labels.get(
                     update["phase"], update["phase"]
                 )
+            elif update["type"] == "pause_state":
+                st.session_state.search_paused = update["paused"]
             elif update["type"] == "error":
                 st.session_state.search_error = update["message"]
 
@@ -557,6 +563,62 @@ def render_live_monitor():
                     delta=f"Iter {best['iteration']}",
                 )
 
+        # ── Steering Panel ────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("**🎮 Steering**")
+
+        if st.session_state.search_paused:
+            st.warning("Search paused — waiting at iteration boundary.")
+
+        directive_text = st.text_input(
+            "Directive",
+            placeholder="Enter steering directive...",
+            label_visibility="collapsed",
+            key="steering_input",
+        )
+        btn_col1, btn_col2, btn_col3 = st.columns(3)
+
+        with btn_col1:
+            if st.button("Augment", use_container_width=True, disabled=not st.session_state.search_running):
+                if directive_text.strip() and manager is not None:
+                    manager.inject_steering(directive_text.strip(), mode="augment")
+                    st.session_state.steering_history.append({
+                        "directive": directive_text.strip(),
+                        "mode": "augment",
+                        "iteration": st.session_state.current_iteration,
+                    })
+
+        with btn_col2:
+            if st.button("Replace", use_container_width=True, disabled=not st.session_state.search_running):
+                if directive_text.strip() and manager is not None:
+                    manager.inject_steering(directive_text.strip(), mode="replace")
+                    st.session_state.steering_history.append({
+                        "directive": directive_text.strip(),
+                        "mode": "replace",
+                        "iteration": st.session_state.current_iteration,
+                    })
+
+        with btn_col3:
+            if st.session_state.search_paused:
+                if st.button("▶️ Resume", use_container_width=True):
+                    if manager is not None:
+                        manager.resume_search()
+                        st.session_state.search_paused = False
+            else:
+                if st.button("⏸️ Pause", use_container_width=True, disabled=not st.session_state.search_running):
+                    if manager is not None:
+                        manager.pause_search()
+                        st.session_state.search_paused = True
+
+        # Steering history
+        if st.session_state.steering_history:
+            with st.expander(f"📋 Steering History ({len(st.session_state.steering_history)})"):
+                for item in st.session_state.steering_history:
+                    tag = "🔀 REPLACE" if item["mode"] == "replace" else "➕ AUGMENT"
+                    st.caption(
+                        f"Iter {item['iteration']} {tag}: {item['directive'][:60]}"
+                    )
+
     # 4. Auto-rerun (MUST be last)
     if st.session_state.search_running:
         time.sleep(1)
@@ -575,6 +637,8 @@ def _reset_for_new_search():
     st.session_state.base_opflow = None
     st.session_state.best_opflow = None
     st.session_state.goal_classification = None
+    st.session_state.steering_history = []
+    st.session_state.search_paused = False
     st.rerun()
 
 
@@ -892,6 +956,7 @@ def _render_analysis_tab(session):
                     base_result=st.session_state.base_opflow,
                     best_result=st.session_state.best_opflow,
                     goal_classification=st.session_state.goal_classification,
+                    steering_history=st.session_state.steering_history or None,
                 )
             except Exception as e:
                 st.error(f"Failed to generate PDF: {e}")

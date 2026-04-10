@@ -91,7 +91,7 @@ The `on_phase(iteration, phase_name)` callback receives:
 
 This is the **only change** to existing `llm_sim/` code. The callback parameters are optional, defaulting to `None`, so CLI usage is completely unaffected.
 
-**Important note**: This is a modification to `llm_sim/engine/agent_loop.py`, not to anything in `launcher/`. It's the minimal hook needed for GUI integration. The launcher folder itself only contains new files.
+**Note**: `AgentLoopController` was extended beyond callbacks to also support interactive steering (steering queue, pause/resume via `threading.Event`, `inject_steering()`, `pause()`, `resume()`, `is_paused()`, `steering_history` property). The `SearchJournal` gained `add_analysis()` and `summary_stats(best_iteration_override, goal_type)`. These additions are non-breaking — all new parameters default to `None` and CLI behaviour is unchanged.
 
 ### 2.3 Threading Model
 
@@ -466,11 +466,14 @@ class SessionManager:
 
     def __init__(self):
         self._thread: Optional[Thread] = None
+        self._controller: Optional[AgentLoopController] = None
         self._session: Optional[SearchSession] = None
         self._update_queue: queue.Queue = queue.Queue()
+        self._goal_classification: Optional[dict] = None
+        self._opflow_by_iteration: dict[int, OPFLOWResult] = {}
 
     def start_search(self, config_overrides: dict, goal: str,
-                     config_path: str = "../configs/default_config.yaml") -> None:
+                     config_path: str | Path | None = None) -> None:
         """Build config, create controller with callbacks, launch in thread."""
         ...
 
@@ -490,16 +493,59 @@ class SessionManager:
         """Get the completed SearchSession after search ends."""
         ...
 
+    # --- Steering and pause/resume ---
+
+    def inject_steering(self, directive: str, mode: str = "augment") -> None:
+        """Forward a steering directive to the running controller."""
+        ...
+
+    def pause_search(self) -> None:
+        """Pause the search at the next iteration boundary."""
+        ...
+
+    def resume_search(self) -> None:
+        """Resume a paused search."""
+        ...
+
+    def is_paused(self) -> bool:
+        """Check if the search is currently paused."""
+        ...
+
+    def get_steering_history(self) -> list[dict]:
+        """Return the list of steering directives injected so far."""
+        ...
+
+    # --- Analysis and goal classification ---
+
     def get_summary_analysis(self, session: SearchSession) -> str:
-        """Make a final LLM call to generate analytical summary of the search."""
+        """Make a final LLM call to generate analytical summary.
+
+        Also requests a structured JSON goal classification block from the LLM:
+          {"goal_type": "...", "best_iteration": N, "best_iteration_rationale": "..."}
+        Parsed and stored in self._goal_classification.
+        """
+        ...
+
+    def get_goal_classification(self) -> dict | None:
+        """Get the LLM-determined goal classification, or None if not yet computed."""
+        ...
+
+    def get_best_opflow(self) -> OPFLOWResult | None:
+        """Best feasible OPFLOW result — uses LLM classification when available."""
+        ...
+
+    def get_opflow_by_iteration(self, iteration: int) -> OPFLOWResult | None:
+        """Get the OPFLOW result for a specific iteration."""
         ...
 ```
 
 **Key design decisions:**
 
 - Uses `queue.Queue` for thread-safe communication between background search thread and Streamlit's main loop.
-- The `config_path` defaults to `../configs/default_config.yaml` (relative to `launcher/`), keeping config files in their existing location.
-- `get_summary_analysis()` creates a separate one-shot LLM call (using the same backend configured for the search) with the complete journal as context, asking for a structured summary.
+- `inject_steering()`, `pause_search()`, `resume_search()` are thin forwarding wrappers over `AgentLoopController` methods — the controller owns the actual queue and threading primitives.
+- `get_summary_analysis()` creates a separate one-shot LLM call with the complete journal as context, requesting both a structured narrative and a JSON goal-classification block. The classification drives which iteration is highlighted as "best" in the GUI and PDF report.
+- `_on_pause_state_callback(paused)` puts a `{"type": "pause_state", "paused": bool}` message on the update queue so the GUI can update the Pause/Resume button label in the next rerun.
+- `get_best_opflow()` returns the LLM-classified best iteration's `OPFLOWResult` when available, falling back to the lowest-cost feasible result. This ensures the comparison charts reflect the correct "best" for non-cost-minimization goals.
 
 ### 7.2 `charts.py`
 

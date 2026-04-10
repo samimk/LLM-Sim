@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import queue
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -27,6 +29,7 @@ from llm_sim.parsers import (
 from llm_sim.parsers.matpower_model import MATNetwork
 from llm_sim.parsers.opflow_results import OPFLOWResult
 from llm_sim.prompts import build_system_prompt, build_user_prompt
+from llm_sim.engine.goal_classifier import build_classification_prompts, parse_goal_classification
 
 logger = logging.getLogger("llm_sim.engine.agent_loop")
 
@@ -48,6 +51,8 @@ class SearchSession:
     final_findings: Optional[dict] = None
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
+    goal_classification: Optional[dict] = None
+    analysis_text: Optional[str] = None
 
 
 class AgentLoopController:
@@ -59,6 +64,7 @@ class AgentLoopController:
         quiet: bool = False,
         on_iteration: Callable[[int, JournalEntry, str, OPFLOWResult | None], None] | None = None,
         on_phase: Callable[[int, str], None] | None = None,
+        on_pause_state: Callable[[bool], None] | None = None,
     ) -> None:
         self._config = config
         self._backend: LLMBackend = create_backend(config.llm)
@@ -67,12 +73,23 @@ class AgentLoopController:
         self._quiet = quiet
         self._on_iteration = on_iteration
         self._on_phase = on_phase
+        self._on_pause_state = on_pause_state
         self._stop_requested = False
+
+        # Steering
+        self._steering_queue: queue.Queue = queue.Queue()
+        self._active_steering_directives: list[dict] = []
+        self._steering_history: list[dict] = []
+
+        # Pause/resume
+        self._pause_event = threading.Event()
+        self._pause_event.set()  # Not paused initially
 
         # State tracked across iterations
         self._base_network: Optional[MATNetwork] = None
         self._current_network: Optional[MATNetwork] = None
         self._latest_opflow: Optional[OPFLOWResult] = None
+        self._base_opflow_result: Optional[OPFLOWResult] = None
         self._latest_results_text: Optional[str] = None
         self._error_feedback: Optional[str] = None
         self._consecutive_parse_failures = 0
@@ -91,6 +108,40 @@ class AgentLoopController:
     def request_stop(self) -> None:
         """Request graceful termination of the search loop."""
         self._stop_requested = True
+
+    # ------------------------------------------------------------------
+    # Steering & pause/resume API
+    # ------------------------------------------------------------------
+
+    def inject_steering(self, directive: str, mode: str = "augment") -> None:
+        """Inject a user steering directive into the search.
+
+        Args:
+            directive: Natural language instruction from the user.
+            mode: "augment" (add to original goal) or "replace" (override goal).
+        """
+        self._steering_queue.put({"directive": directive, "mode": mode})
+
+    def pause(self) -> None:
+        """Pause the search at the next iteration boundary."""
+        self._pause_event.clear()
+        if self._on_pause_state:
+            self._on_pause_state(True)
+
+    def resume(self) -> None:
+        """Resume a paused search."""
+        self._pause_event.set()
+        if self._on_pause_state:
+            self._on_pause_state(False)
+
+    def is_paused(self) -> bool:
+        """Return True if the search is currently paused."""
+        return not self._pause_event.is_set()
+
+    @property
+    def steering_history(self) -> list[dict]:
+        """Read-only copy of all steering directives injected so far."""
+        return list(self._steering_history)
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -133,6 +184,7 @@ class AgentLoopController:
 
         if opflow is not None:
             self._latest_results_text = results_summary(opflow)
+            self._base_opflow_result = opflow
             self._journal.add_from_results(
                 iteration=0,
                 description="Base case (no modifications)",
@@ -222,6 +274,25 @@ class AgentLoopController:
         goal: str,
     ) -> tuple[str, bool]:
         """Execute one iteration. Returns (action_type, should_continue)."""
+        # Drain the steering queue at the iteration boundary
+        while True:
+            try:
+                item = self._steering_queue.get_nowait()
+            except queue.Empty:
+                break
+            directive = item["directive"]
+            mode = item["mode"]
+            if mode == "replace":
+                self._active_steering_directives.clear()
+            self._active_steering_directives.append(item)
+            self._steering_history.append({"iteration": iteration, **item})
+            self._print(
+                f"[Iter {iteration}] Steering [{mode.upper()}]: \"{directive[:80]}\""
+            )
+
+        # Pause: block here until resume() is called
+        self._pause_event.wait()
+
         self._print(
             f"\n{'─' * 50}\n"
             f"[Iter {iteration}] Sending prompt to "
@@ -233,6 +304,7 @@ class AgentLoopController:
             goal,
             self._latest_results_text,
             self._error_feedback,
+            steering_directives=self._active_steering_directives or None,
         )
         self._error_feedback = None  # consumed
 
@@ -385,6 +457,10 @@ class AgentLoopController:
             )
 
         # Update journal
+        active_directive = (
+            self._active_steering_directives[-1]["directive"]
+            if self._active_steering_directives else None
+        )
         self._journal.add_from_results(
             iteration=iteration,
             description=description,
@@ -393,6 +469,7 @@ class AgentLoopController:
             sim_elapsed=sim_result.elapsed_seconds,
             llm_reasoning=reasoning,
             mode=mode,
+            steering_directive=active_directive,
         )
 
         return "modify", True
@@ -423,16 +500,28 @@ class AgentLoopController:
         self._latest_results_text = result_text
         logger.info("Analysis query result: %s", result_text[:300])
 
+        # Record analyze action in the journal
+        self._journal.add_analysis(
+            iteration=iteration,
+            query=query,
+            result_summary=result_text[:200],
+        )
+
         return "analyze", True
 
     def _run_analysis_query(self, query: str) -> str:
-        """Execute a basic analysis query against the latest OPFLOW results."""
+        """Execute an analysis query against the latest OPFLOW results.
+
+        Handles pattern-matched queries for common analyses and falls back to
+        an LLM sub-call for arbitrary questions.
+        """
         if self._latest_opflow is None:
             return "No simulation results available to analyze."
 
         opf = self._latest_opflow
         q = query.lower()
 
+        # ── Voltage threshold queries ────────────────────────────────────
         m = re.search(r"voltage\s+below\s+([\d.]+)", q)
         if m:
             threshold = float(m.group(1))
@@ -455,6 +544,7 @@ class AgentLoopController:
                 lines.append(f"  Bus {b.bus_id}: Vm={b.Vm:.4f} pu")
             return "\n".join(lines)
 
+        # ── Line loading ─────────────────────────────────────────────────
         if "most loaded" in q or "loaded lines" in q or "line loading" in q:
             loaded = []
             for br in opf.branches:
@@ -471,7 +561,8 @@ class AgentLoopController:
                 )
             return "\n".join(lines)
 
-        if "generator" in q:
+        # ── Generator summary ────────────────────────────────────────────
+        if "generator" in q and "cost" not in q:
             lines = ["Generators:"]
             for g in sorted(opf.generators, key=lambda g: -g.Pg):
                 status = "ON" if g.status == 1 else "OFF"
@@ -481,13 +572,136 @@ class AgentLoopController:
                 )
             return "\n".join(lines)
 
-        return (
-            "Query not understood. Available queries:\n"
-            "  - 'buses with voltage below X'\n"
-            "  - 'buses with voltage above X'\n"
-            "  - 'most loaded lines'\n"
-            "  - 'generators'"
-        )
+        # ── Voltage profile for a specific kV level ──────────────────────
+        m = re.search(r"(\d+(?:\.\d+)?)\s*kv", q)
+        if m and ("voltage profile" in q or "kv buses" in q or "buses" in q):
+            target_kv = float(m.group(1))
+            kv_buses = [b for b in opf.buses if abs(b.base_kv - target_kv) < 1.0]
+            if not kv_buses:
+                return f"No buses found at {target_kv} kV."
+            lines = [f"Voltage profile for {target_kv} kV buses ({len(kv_buses)} buses):"]
+            for b in sorted(kv_buses, key=lambda b: b.bus_id):
+                lines.append(f"  Bus {b.bus_id}: Vm={b.Vm:.4f} pu, Va={b.Va:.2f}°")
+            return "\n".join(lines)
+
+        # ── Area summary ─────────────────────────────────────────────────
+        m = re.search(r"area\s+(\d+)", q)
+        if m and ("summary" in q or "area" in q):
+            area_id = int(m.group(1))
+            area_buses = [b for b in opf.buses if b.area == area_id]
+            if not area_buses:
+                return f"No buses found in area {area_id}."
+            total_load = sum(b.Pd for b in area_buses)
+            total_gen = sum(
+                g.Pg for g in opf.generators
+                if any(b.bus_id == g.bus for b in area_buses)
+            )
+            vm_vals = [b.Vm for b in area_buses]
+            lines = [
+                f"Area {area_id} Summary ({len(area_buses)} buses):",
+                f"  Total load:       {total_load:.2f} MW",
+                f"  Total generation: {total_gen:.2f} MW",
+                f"  Voltage range:    {min(vm_vals):.4f} – {max(vm_vals):.4f} pu",
+            ]
+            return "\n".join(lines)
+
+        # ── Cost breakdown by fuel type ──────────────────────────────────
+        if "cost breakdown" in q or "generation cost" in q:
+            from collections import defaultdict
+            fuel_mw: dict[str, float] = defaultdict(float)
+            for g in opf.generators:
+                if g.status == 1:
+                    fuel = g.fuel or "unknown"
+                    fuel_mw[fuel] += g.Pg
+            lines = [f"Generation cost breakdown (total: ${opf.objective_value:,.2f}):"]
+            for fuel, mw in sorted(fuel_mw.items(), key=lambda x: -x[1]):
+                lines.append(f"  {fuel:15s}: {mw:8.2f} MW")
+            return "\n".join(lines)
+
+        # ── Constraint margins ───────────────────────────────────────────
+        if "constraint margin" in q or "binding constraint" in q:
+            lines = ["Constraint Margins:"]
+            # Voltage limits
+            v_min_limit = 0.95
+            v_max_limit = 1.05
+            voltage_margins = []
+            for b in opf.buses:
+                margin_low = b.Vm - v_min_limit
+                margin_high = v_max_limit - b.Vm
+                voltage_margins.append((min(margin_low, margin_high), b))
+            voltage_margins.sort(key=lambda x: x[0])
+            lines.append("  Tightest voltage margins:")
+            for margin, b in voltage_margins[:5]:
+                lines.append(f"    Bus {b.bus_id}: Vm={b.Vm:.4f} pu (margin={margin:.4f})")
+            # Line loading
+            line_margins = []
+            for br in opf.branches:
+                if br.Slim > 0:
+                    loading = max(br.Sf, br.St) / br.Slim * 100
+                    line_margins.append((100 - loading, br, loading))
+            line_margins.sort(key=lambda x: x[0])
+            lines.append("  Lines closest to thermal limit:")
+            for headroom, br, loading in line_margins[:5]:
+                lines.append(
+                    f"    {br.from_bus}->{br.to_bus}: {loading:.1f}% loaded "
+                    f"(headroom={headroom:.1f}%)"
+                )
+            return "\n".join(lines)
+
+        # ── Compare with base case ───────────────────────────────────────
+        if "compare with base" in q or "changes from base" in q:
+            if self._base_opflow_result is None:
+                return "Base case results not available for comparison."
+            base = self._base_opflow_result
+            curr = opf
+            lines = ["Comparison: current vs base case:"]
+            if base.objective_value is not None and curr.objective_value is not None:
+                delta = curr.objective_value - base.objective_value
+                pct = delta / base.objective_value * 100 if base.objective_value != 0 else 0
+                lines.append(
+                    f"  Cost:       ${base.objective_value:,.2f} → ${curr.objective_value:,.2f}"
+                    f"  ({delta:+,.2f}, {pct:+.1f}%)"
+                )
+            lines.append(
+                f"  Voltage:    [{base.voltage_min:.4f}, {base.voltage_max:.4f}] → "
+                f"[{curr.voltage_min:.4f}, {curr.voltage_max:.4f}] pu"
+            )
+            lines.append(
+                f"  Generation: {base.total_gen_mw:.2f} → {curr.total_gen_mw:.2f} MW "
+                f"({curr.total_gen_mw - base.total_gen_mw:+.2f})"
+            )
+            lines.append(
+                f"  Max loading:{base.max_line_loading_pct:.1f}% → "
+                f"{curr.max_line_loading_pct:.1f}% "
+                f"({curr.max_line_loading_pct - base.max_line_loading_pct:+.1f}pp)"
+            )
+            return "\n".join(lines)
+
+        # ── LLM fallback for unrecognized queries ────────────────────────
+        logger.info("Analysis query not matched by patterns; using LLM fallback: %s", query)
+        try:
+            system = (
+                "You are analyzing power grid simulation results. "
+                "Answer the user's question based on the provided data. Be concise."
+            )
+            context = self._latest_results_text or "No results available."
+            user = f"Question: {query}\n\nCurrent results:\n{context}"
+            response = self._backend.complete(system, user)
+            return response.raw_text
+        except Exception as exc:
+            logger.warning("LLM fallback for analysis failed: %s", exc)
+            return (
+                f"Query not matched and LLM fallback failed: {exc}\n"
+                "Available pattern queries:\n"
+                "  - 'voltage below/above X'\n"
+                "  - 'most loaded lines'\n"
+                "  - 'generators'\n"
+                "  - '<N>kV voltage profile'\n"
+                "  - 'area N summary'\n"
+                "  - 'cost breakdown'\n"
+                "  - 'constraint margins'\n"
+                "  - 'compare with base'"
+            )
 
     # ------------------------------------------------------------------
     # Prompt assembly
@@ -498,6 +712,7 @@ class AgentLoopController:
         goal: str,
         latest_results_text: Optional[str],
         error_feedback: Optional[str] = None,
+        steering_directives: list[dict] | None = None,
     ) -> tuple[str, str]:
         """Assemble the system prompt and user prompt for the LLM."""
         journal_text = (
@@ -508,6 +723,7 @@ class AgentLoopController:
             journal_text=journal_text,
             results_text=latest_results_text,
             error_feedback=error_feedback,
+            steering_directives=steering_directives,
         )
         return self._system_prompt, user_prompt
 
@@ -517,9 +733,42 @@ class AgentLoopController:
 
     def _finalize(self, session: SearchSession, elapsed_seconds: float) -> None:
         """Print summary and save journal."""
-        stats = self._journal.summary_stats()
-
         total_tokens = self._total_prompt_tokens + self._total_completion_tokens
+
+        # --- Post-search goal classification via LLM ---
+        goal_classification: Optional[dict] = None
+        analysis_text: Optional[str] = None
+        try:
+            raw_stats = self._journal.summary_stats()
+            sys_prompt, user_prompt = build_classification_prompts(
+                goal=session.goal,
+                termination_reason=session.termination_reason,
+                stats=raw_stats,
+                journal_formatted=self._journal.format_detailed(),
+                total_tokens=total_tokens,
+            )
+            response = self._backend.complete(sys_prompt, user_prompt)
+            analysis_text = response.raw_text
+            valid_iters = {e.iteration for e in self._journal.entries}
+            goal_classification = parse_goal_classification(analysis_text, valid_iters)
+        except Exception as exc:
+            logger.warning("Post-search goal classification failed: %s", exc)
+
+        # Resolve stats with override if classification succeeded
+        best_iter_override = (
+            goal_classification["best_iteration"] if goal_classification else None
+        )
+        goal_type_override = (
+            goal_classification["goal_type"] if goal_classification else None
+        )
+        stats = self._journal.summary_stats(
+            best_iteration_override=best_iter_override,
+            goal_type=goal_type_override,
+        )
+
+        # Store on session for downstream consumers (GUI, tests)
+        session.goal_classification = goal_classification
+        session.analysis_text = analysis_text
 
         # Always print the final summary (even in quiet mode)
         print()
@@ -541,13 +790,28 @@ class AgentLoopController:
                 f"completion: {self._total_completion_tokens:,})"
             )
         print(f"  Termination:    {session.termination_reason}")
-        if stats["best_objective"] is not None:
+
+        # Goal-aware best-solution line
+        goal_type = stats.get("goal_type") or "cost_minimization"
+        best_iter = stats["best_iteration"]
+        best_obj = stats["best_objective"]
+        rationale = (
+            goal_classification["best_iteration_rationale"] if goal_classification else None
+        )
+
+        if best_obj is None:
+            print("  Best solution:  N/A (no feasible solution found)")
+        elif goal_type == "cost_minimization":
             print(
-                f"  Best objective: ${stats['best_objective']:,.2f} "
-                f"(iteration {stats['best_iteration']})"
+                f"  Best objective: ${best_obj:,.2f} "
+                f"(iteration {best_iter})"
             )
         else:
-            print("  Best objective: N/A (no feasible solution)")
+            cost_str = f"${best_obj:,.2f}" if best_obj is not None else "N/A"
+            print(f"  Best solution:  iteration {best_iter} — cost={cost_str}")
+            if rationale:
+                print(f"  Rationale:      {rationale}")
+            print(f"  Search type:    {goal_type.replace('_', ' ')}")
 
         # Print findings if complete
         findings = getattr(self, "_final_findings", None)
@@ -562,6 +826,17 @@ class AgentLoopController:
         # Print journal table
         print()
         print(self._journal.format_for_prompt())
+
+        # Print truncated analysis text
+        if analysis_text:
+            print()
+            print("─" * 60)
+            print("  Post-Search Analysis:")
+            print("─" * 60)
+            snippet = analysis_text[:500]
+            if len(analysis_text) > 500:
+                snippet += f"\n  ... ({len(analysis_text) - 500} chars truncated)"
+            print(snippet)
 
         # Save journal if configured
         if self._config.output.save_journal:

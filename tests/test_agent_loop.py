@@ -452,8 +452,8 @@ class TestAnalyzeAction:
             session = controller.run(BASE_CASE, "Analyze voltages")
 
         assert session.termination_reason == "completed"
-        # Analyze doesn't add a journal entry
-        assert len(session.journal) == 1  # only base case
+        # Analyze adds a lightweight ANALYSIS entry (base case + analyze = 2)
+        assert len(session.journal) == 2
 
 
 @pytest.mark.skipif(not _has_base_case, reason="Base case .m file not found")

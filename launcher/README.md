@@ -55,8 +55,24 @@ Do **not** run `streamlit run app.py` from inside `launcher/` — paths will not
 - **Detailed Results**: Voltage profile comparison, generator dispatch chart, line loading chart, full iteration history table
 - **Analysis & Report**: On-demand LLM-generated analytical summary, auto-generated search narrative, PDF report download
 
+### Interactive Steering Panel
+
+The live search monitor includes a steering panel (right column, below the progress stats) that lets you guide the LLM mid-search without stopping it.
+
+**Controls:**
+- **Directive input** — free-text field for the steering instruction
+- **Augment** — injects the directive alongside the current goal; the LLM considers it as an additional constraint or preference
+- **Replace** — injects the directive as a full goal replacement; previous directives are cleared
+- **Pause / Resume** — pauses the search at the next iteration boundary, or resumes it
+- **Steering history expander** — shows all directives injected so far (iteration, mode, text)
+
+**Semantics:**
+- Multiple augment directives accumulate; a replace directive clears all previous ones.
+- Injecting any directive while paused automatically resumes the search.
+- The steering history is included in the PDF report.
+
 ### PDF Reports
-- Professional multi-page PDF with title page, executive summary, convergence charts, results comparison tables, and full iteration log
+- Professional multi-page PDF with title page, executive summary, convergence charts, results comparison tables, full iteration log, and steering directive history
 - Uses DejaVu Sans font for diacritics support
 - Chart images exported via Plotly/kaleido
 

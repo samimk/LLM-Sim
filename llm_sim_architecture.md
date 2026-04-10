@@ -29,7 +29,7 @@ The project is developed as a self-contained codebase that will later be incorpo
 - **Base case + deltas model:** A user-provided base case file (.m and optionally .gic) is immutable throughout the search. Each iteration creates a working copy and applies the LLM's modifications as structured JSON commands.
 - **Multi-backend LLM support:** The system supports OpenAI API, Anthropic API, and Ollama (including Ollama Cloud) through a unified abstraction layer.
 - **Iterative and bounded search:** Every search session has a configurable maximum iteration count (default: 20). The LLM can terminate early by declaring the goal achieved.
-- **Designed for future interactive steering:** The PoC runs autonomously once started, but the architecture anticipates mid-search user intervention.
+- **Interactive steering:** Users can inject directives into a running search (augment or replace mode) and pause/resume at iteration boundaries without restarting.
 - **Designed for future multi-objective reasoning:** The system anticipates qualitative multi-objective tasks where the LLM balances competing goals.
 
 ---
@@ -238,16 +238,36 @@ Complete action:
 
 ---
 
-## 8. Interactive Steering (Future)
+## 8. Interactive Steering (Implemented)
 
-Capabilities planned:
-- **Goal refinement:** "Focus more on voltage issues, cost is secondary."
-- **Constraint injection:** "Don't touch generators in area 3."
-- **Strategy override:** "Try reducing load instead of adding generation."
-- **Detail requests:** "Show me the voltage profile for all 230kV buses."
-- **Branching:** "Save this state and explore an alternative from iteration 5."
+Users can inject steering directives into a running search without stopping it.
 
-Implementation: non-blocking user input check between iterations; input prepended to next prompt as "operator directive."
+### Mechanism
+
+- **Steering queue** (`queue.Queue`): Any thread (CLI listener, GUI) calls `controller.inject_steering(directive, mode)`. Items are drained at the start of each iteration boundary.
+- **Directive modes:**
+  - `augment` — the directive is added alongside the current goal. Multiple augment directives accumulate.
+  - `replace` — the directive replaces all previously active directives (clears the accumulation list), then becomes the sole active directive.
+- **Active directives** are injected into the user prompt as an `=== Operator Directives ===` section. The LLM is instructed on how each mode affects priority.
+- **Steering history** is recorded per iteration in `JournalEntry.steering_directive` and in `AgentLoopController._steering_history`. It is included in the PDF report.
+
+### Pause / Resume
+
+- `controller.pause()` — clears `threading.Event._pause_event`; the search thread calls `_pause_event.wait()` at the next iteration boundary and blocks without busy-waiting.
+- `controller.resume()` — sets the event, unblocking the thread.
+- An optional `on_pause_state(paused: bool)` callback notifies the GUI.
+
+### CLI entry point
+
+`llm_sim/cli.py` starts a daemon thread (`_start_stdin_listener`) when stdin is a TTY. Accepted commands: `pause`, `resume`, `stop`, `status`, `replace: <text>`, or bare text (augment).
+
+### GUI entry point
+
+The Streamlit launcher's live monitor exposes a steering text input plus Augment, Replace, and Pause/Resume buttons that forward to `SessionManager`, which delegates to `AgentLoopController`.
+
+### Branching (Future)
+
+Saving a state snapshot and exploring alternative search paths from a prior iteration is not yet implemented.
 
 ---
 

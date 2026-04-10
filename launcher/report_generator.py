@@ -216,6 +216,7 @@ class ReportGenerator:
         base_result: OPFLOWResult | None = None,
         best_result: OPFLOWResult | None = None,
         goal_classification: dict | None = None,
+        steering_history: list[dict] | None = None,
     ) -> bytes:
         """Generate a PDF report and return it as bytes.
 
@@ -258,6 +259,11 @@ class ReportGenerator:
         ))
         story.append(PageBreak())
         story.extend(self._build_iteration_log(session))
+
+        # Add steering history section if any directives were used
+        if steering_history:
+            story.append(PageBreak())
+            story.extend(self._build_steering_section(steering_history))
 
         doc.build(story)
         return buffer.getvalue()
@@ -715,6 +721,47 @@ class ReportGenerator:
             ("ALIGN", (0, 0), (0, -1), "CENTER"),
             ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        elements.append(table)
+
+        return elements
+
+    # ── Steering History ─────────────────────────────────────────────────
+
+    def _build_steering_section(self, steering_history: list[dict]) -> list:
+        """Build a 'Steering History' section for the PDF report."""
+        s = self._styles
+        elements: list = []
+        elements.append(Paragraph("Steering History", s["heading1"]))
+        elements.append(Paragraph(
+            f"The user injected {len(steering_history)} steering directive(s) "
+            "during the search to guide the LLM's decision-making.",
+            s["body"],
+        ))
+        elements.append(Spacer(1, 0.5 * cm))
+
+        header = ["Iter", "Mode", "Directive"]
+        rows: list = [header]
+        for item in steering_history:
+            rows.append([
+                str(item.get("iteration", "—")),
+                item.get("mode", "augment").upper(),
+                item.get("directive", "")[:100],
+            ])
+
+        table = Table(rows, colWidths=[1.5 * cm, 2.5 * cm, 13 * cm])
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3498db")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), self._font_bold),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("FONTNAME", (0, 1), (-1, -1), self._font),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
+            ("ALIGN", (0, 0), (1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ]))
         elements.append(table)
 
