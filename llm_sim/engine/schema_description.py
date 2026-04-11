@@ -63,10 +63,16 @@ Available modification commands (JSON format):
    Optional: gen_id (int)
    Example: {"action": "set_cost_coeffs", "bus": 189, "coeffs": [0.003, 20.0, 500.0]}
 
-10. set_bus_vlimits — Set bus voltage limits
+10. set_bus_vlimits — Set voltage limits on a single bus
     Required: bus (int)
     Optional: Vmin (float, pu), Vmax (float, pu)
     Example: {"action": "set_bus_vlimits", "bus": 10, "Vmin": 0.95, "Vmax": 1.05}
+
+11. set_all_bus_vlimits — Set voltage limits on ALL buses at once
+    Optional: Vmin (float, pu), Vmax (float, pu) — at least one required
+    Example: {"action": "set_all_bus_vlimits", "Vmin": 0.95, "Vmax": 1.05}
+    This is the preferred way to enforce system-wide voltage constraints in
+    OPFLOW. Much more efficient than issuing set_bus_vlimits for each bus.
 
 Return your commands as a JSON object with a "commands" key containing a list:
 {"commands": [{"action": "...", ...}, {"action": "...", ...}]}

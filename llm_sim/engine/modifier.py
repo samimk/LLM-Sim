@@ -10,6 +10,7 @@ from llm_sim.engine.commands import (
     ModCommand,
     ScaleAllLoads,
     ScaleLoad,
+    SetAllBusVLimits,
     SetBranchRate,
     SetBranchStatus,
     SetBusVLimits,
@@ -154,6 +155,21 @@ def _apply_one(cmd: ModCommand, net: MATNetwork) -> str:
             bus.Vmax = cmd.Vmax
             parts.append(f"Vmax={cmd.Vmax}")
         return f"Set bus {cmd.bus} voltage limits: {', '.join(parts)}"
+
+    if isinstance(cmd, SetAllBusVLimits):
+        count = 0
+        for bus in net.buses:
+            if cmd.Vmin is not None:
+                bus.Vmin = cmd.Vmin
+            if cmd.Vmax is not None:
+                bus.Vmax = cmd.Vmax
+            count += 1
+        parts = []
+        if cmd.Vmin is not None:
+            parts.append(f"Vmin={cmd.Vmin}")
+        if cmd.Vmax is not None:
+            parts.append(f"Vmax={cmd.Vmax}")
+        return f"Set voltage limits on all {count} buses: {', '.join(parts)}"
 
     return f"Unknown command type: {type(cmd).__name__}"
 

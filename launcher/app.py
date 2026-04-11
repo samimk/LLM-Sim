@@ -706,20 +706,40 @@ def _render_overview_tab(session):
     mc4.metric("Termination", session.termination_reason)
     mc5.metric("Tokens", f"{total_tokens:,}" if total_tokens > 0 else "—")
 
-    # Best objective with improvement vs base
+    # Best objective with goal-type-aware framing
     base_entry = session.journal.entries[0] if session.journal.entries else None
     if stats["best_objective"] is not None:
         if base_entry and base_entry.objective_value is not None and base_entry.objective_value != 0:
-            improvement = base_entry.objective_value - stats["best_objective"]
-            pct = improvement / base_entry.objective_value * 100
-            st.metric(
-                "Best Objective",
-                f"${stats['best_objective']:,.2f}",
-                delta=f"-{pct:.1f}% vs base case",
-                delta_color="inverse",
-            )
+            pct = (stats["best_objective"] - base_entry.objective_value) / base_entry.objective_value * 100
+            if goal_type in (None, "cost_minimization"):
+                # Lower cost is better — show reduction as positive delta (green)
+                delta_str = f"{-pct:.1f}% cost reduction vs base"
+                st.metric(
+                    "Best Objective",
+                    f"${stats['best_objective']:,.2f}",
+                    delta=delta_str,
+                    delta_color="inverse",
+                )
+            elif goal_type == "feasibility_boundary":
+                # Cost increase is expected (more load served) — neutral framing
+                delta_str = f"{pct:+.1f}% vs base (increase expected)"
+                st.metric(
+                    "Cost at Best Solution",
+                    f"${stats['best_objective']:,.2f}",
+                    delta=delta_str,
+                    delta_color="off",
+                )
+            else:
+                delta_str = f"{pct:+.1f}% vs base case"
+                st.metric(
+                    "Cost at Best Solution",
+                    f"${stats['best_objective']:,.2f}",
+                    delta=delta_str,
+                    delta_color="off",
+                )
         else:
-            st.metric("Best Objective", f"${stats['best_objective']:,.2f}")
+            label = "Best Objective" if goal_type in (None, "cost_minimization") else "Cost at Best Solution"
+            st.metric(label, f"${stats['best_objective']:,.2f}")
 
     # Show goal achievement if available
     if gc and gc.get("best_iteration_rationale"):
@@ -810,7 +830,12 @@ def _render_overview_tab(session):
     st.plotly_chart(fig, width="stretch")
 
     # Voltage range chart
-    fig_v = voltage_range_chart(session.journal, height=350)
+    fig_v = voltage_range_chart(
+        session.journal,
+        v_min_limit=session.enforced_vmin if session.enforced_vmin is not None else 0.95,
+        v_max_limit=session.enforced_vmax if session.enforced_vmax is not None else 1.05,
+        height=350,
+    )
     st.plotly_chart(fig_v, width="stretch")
 
 
@@ -822,7 +847,11 @@ def _render_detailed_tab(session):
     best_opflow = st.session_state.best_opflow
 
     # Voltage Profile
-    fig_vp = voltage_profile_chart(base_opflow, best_opflow)
+    fig_vp = voltage_profile_chart(
+        base_opflow, best_opflow,
+        v_min_limit=session.enforced_vmin if session.enforced_vmin is not None else 0.95,
+        v_max_limit=session.enforced_vmax if session.enforced_vmax is not None else 1.05,
+    )
     if fig_vp is not None:
         st.plotly_chart(fig_vp, width="stretch")
     else:

@@ -9,6 +9,7 @@ from llm_sim.engine.commands import (
     ModCommand,
     ScaleAllLoads,
     ScaleLoad,
+    SetAllBusVLimits,
     SetBranchRate,
     SetBranchStatus,
     SetBusVLimits,
@@ -167,6 +168,15 @@ def validate_command(cmd: ModCommand, net: MATNetwork) -> ValidationResult:
         _validate_bus_exists(net, cmd.bus, errors)
         if cmd.Vmin is not None and cmd.Vmax is not None and cmd.Vmin >= cmd.Vmax:
             errors.append(f"Vmin={cmd.Vmin} must be < Vmax={cmd.Vmax}")
+
+    elif isinstance(cmd, SetAllBusVLimits):
+        if cmd.Vmin is None and cmd.Vmax is None:
+            warnings.append("set_all_bus_vlimits has no effect: neither Vmin nor Vmax was provided")
+        if cmd.Vmin is not None and cmd.Vmax is not None and cmd.Vmin >= cmd.Vmax:
+            errors.append(f"Vmin={cmd.Vmin} must be < Vmax={cmd.Vmax}")
+        for v, name in ((cmd.Vmin, "Vmin"), (cmd.Vmax, "Vmax")):
+            if v is not None and (v < 0.5 or v > 1.5):
+                warnings.append(f"{name}={v} is outside the reasonable range [0.5, 1.5] pu")
 
     return ValidationResult(
         valid=len(errors) == 0,

@@ -235,6 +235,9 @@ class ReportGenerator:
         best_iter_override = gc.get("best_iteration") if gc else None
         goal_type = gc.get("goal_type") if gc else None
 
+        v_min = session.enforced_vmin if session.enforced_vmin is not None else 0.95
+        v_max = session.enforced_vmax if session.enforced_vmax is not None else 1.05
+
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
@@ -250,12 +253,14 @@ class ReportGenerator:
         ))
         story.append(PageBreak())
         story.extend(self._build_convergence_section(
-            session, best_iteration=best_iter_override,
+            session, best_iteration=best_iter_override, goal_type=goal_type,
+            v_min=v_min, v_max=v_max,
         ))
         story.append(PageBreak())
         story.extend(self._build_comparison_section(
             session, base_result, best_result, goal_type=goal_type,
             best_iteration_override=best_iter_override,
+            v_min=v_min, v_max=v_max,
         ))
         story.append(PageBreak())
         story.extend(self._build_iteration_log(session))
@@ -501,19 +506,31 @@ class ReportGenerator:
 
         if stats["best_objective"] is not None:
             base_entry = session.journal.entries[0] if session.journal.entries else None
-            best_str = f"Best objective: ${stats['best_objective']:,.2f} (iteration {stats['best_iteration']})"
+            best_cost_str = f"${stats['best_objective']:,.2f} (iteration {stats['best_iteration']})"
             if base_entry and base_entry.objective_value and base_entry.objective_value != 0:
-                pct = (base_entry.objective_value - stats["best_objective"]) / base_entry.objective_value * 100
-                best_str += f" — {pct:.1f}% improvement vs base case"
-            lines.insert(0, best_str)
+                pct = (stats["best_objective"] - base_entry.objective_value) / base_entry.objective_value * 100
+                if goal_type in (None, "cost_minimization"):
+                    reduction = -pct  # positive = saving
+                    best_str = f"Best objective: {best_cost_str} — {reduction:.1f}% cost reduction vs base case"
+                elif goal_type == "feasibility_boundary":
+                    best_str = f"Cost at best solution: {best_cost_str} ({pct:+.1f}% vs base case — increase expected)"
+                else:
+                    best_str = f"Cost at best solution: {best_cost_str} ({pct:+.1f}% vs base case)"
+            else:
+                best_str = f"Best objective: {best_cost_str}"
+            # For non-cost-minimization, lead with the rationale if available
+            if goal_type not in (None, "cost_minimization") and gc and gc.get("best_iteration_rationale"):
+                rationale = self._escape_xml(gc["best_iteration_rationale"])
+                lines.insert(0, f"Goal achievement: {rationale}")
+            lines.insert(0 if goal_type in (None, "cost_minimization") else 1, best_str)
         else:
             lines.insert(0, "No feasible solution found.")
 
         for line in lines:
             elements.append(Paragraph(self._escape_xml(line), s["body"]))
 
-        # Goal achievement rationale
-        if gc and gc.get("best_iteration_rationale"):
+        # Goal achievement rationale for cost_minimization (non-cost types already inserted above)
+        if goal_type in (None, "cost_minimization") and gc and gc.get("best_iteration_rationale"):
             rationale = self._escape_xml(gc["best_iteration_rationale"])
             elements.append(Paragraph(f"Goal achievement: {rationale}", s["body"]))
 
@@ -528,13 +545,20 @@ class ReportGenerator:
     # ── Convergence Section ──────────────────────────────────────────────
 
     def _build_convergence_section(
-        self, session: SearchSession, best_iteration: int | None = None,
+        self,
+        session: SearchSession,
+        best_iteration: int | None = None,
+        goal_type: str | None = None,
+        v_min: float = 0.95,
+        v_max: float = 1.05,
     ) -> list:
         s = self._styles
         elements: list = []
         elements.append(Paragraph("Convergence Analysis", s["heading1"]))
 
-        stats = session.journal.summary_stats(best_iteration_override=best_iteration)
+        stats = session.journal.summary_stats(
+            best_iteration_override=best_iteration, goal_type=goal_type,
+        )
 
         # Auto-generated text
         n = stats["total_iterations"]
@@ -542,8 +566,11 @@ class ReportGenerator:
         if stats["best_objective"] is not None:
             base_entry = session.journal.entries[0] if session.journal.entries else None
             if base_entry and base_entry.objective_value and base_entry.objective_value != 0:
-                pct = (base_entry.objective_value - stats["best_objective"]) / base_entry.objective_value * 100
-                text += f" A {pct:.1f}% cost change was observed from the base case."
+                pct = (stats["best_objective"] - base_entry.objective_value) / base_entry.objective_value * 100
+                if goal_type in (None, "cost_minimization"):
+                    text += f" A {-pct:.1f}% cost reduction was achieved vs the base case."
+                else:
+                    text += f" Cost changed by {pct:+.1f}% vs the base case."
             text += f" The best solution (objective ${stats['best_objective']:,.2f}) was found at iteration {stats['best_iteration']}."
         elements.append(Paragraph(text, s["body"]))
         elements.append(Spacer(1, 0.5 * cm))
@@ -560,7 +587,7 @@ class ReportGenerator:
         elements.append(Spacer(1, 0.5 * cm))
 
         # Voltage range chart
-        fig_v = voltage_range_chart(session.journal, height=300)
+        fig_v = voltage_range_chart(session.journal, height=300, v_min_limit=v_min, v_max_limit=v_max)
         img_bytes_v = _export_chart_image(fig_v, width_px=700, height_px=300)
         if img_bytes_v:
             elements.append(Image(io.BytesIO(img_bytes_v), width=16 * cm, height=7 * cm))
@@ -577,6 +604,8 @@ class ReportGenerator:
         best_result: OPFLOWResult | None,
         goal_type: str | None = None,
         best_iteration_override: int | None = None,
+        v_min: float = 0.95,
+        v_max: float = 1.05,
     ) -> list:
         s = self._styles
         elements: list = []
@@ -668,7 +697,7 @@ class ReportGenerator:
         elements.append(Spacer(1, 1 * cm))
 
         # Voltage profile chart
-        fig_vp = voltage_profile_chart(base_result, best_result)
+        fig_vp = voltage_profile_chart(base_result, best_result, v_min_limit=v_min, v_max_limit=v_max)
         if fig_vp is not None:
             img_bytes = _export_chart_image(fig_vp, width_px=700, height_px=400)
             if img_bytes:

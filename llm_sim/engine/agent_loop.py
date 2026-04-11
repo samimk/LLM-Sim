@@ -58,6 +58,8 @@ class SearchSession:
     total_completion_tokens: int = 0
     goal_classification: Optional[dict] = None
     analysis_text: Optional[str] = None
+    enforced_vmin: Optional[float] = None
+    enforced_vmax: Optional[float] = None
 
 
 class AgentLoopController:
@@ -266,6 +268,13 @@ class AgentLoopController:
         session.end_time = datetime.now().isoformat()
         session.total_prompt_tokens = self._total_prompt_tokens
         session.total_completion_tokens = self._total_completion_tokens
+
+        # Record the voltage limits that were enforced in the final network state
+        if self._current_network is not None:
+            limits = _bus_limits_from_network(self._current_network)
+            if limits:
+                session.enforced_vmin = min(v[0] for v in limits.values())
+                session.enforced_vmax = max(v[1] for v in limits.values())
 
         # 4. Finalize session
         elapsed = time.monotonic() - session_start

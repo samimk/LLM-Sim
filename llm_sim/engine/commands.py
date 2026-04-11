@@ -100,9 +100,18 @@ class SetBusVLimits:
     Vmax: Optional[float] = None
 
 
+@dataclass
+class SetAllBusVLimits:
+    """Set voltage limits on all buses in the network."""
+
+    Vmin: Optional[float] = None
+    Vmax: Optional[float] = None
+
+
 ModCommand = Union[
     SetLoad, ScaleLoad, ScaleAllLoads, SetGenStatus, SetGenDispatch,
-    SetGenVoltage, SetBranchStatus, SetBranchRate, SetCostCoeffs, SetBusVLimits,
+    SetGenVoltage, SetBranchStatus, SetBranchRate, SetCostCoeffs,
+    SetBusVLimits, SetAllBusVLimits,
 ]
 
 # Map action names to command classes and their required fields
@@ -117,6 +126,7 @@ _COMMAND_MAP: dict[str, tuple[type, set[str]]] = {
     "set_branch_rate": (SetBranchRate, {"fbus", "tbus", "rateA"}),
     "set_cost_coeffs": (SetCostCoeffs, {"bus", "coeffs"}),
     "set_bus_vlimits": (SetBusVLimits, {"bus"}),
+    "set_all_bus_vlimits": (SetAllBusVLimits, set()),
 }
 
 
