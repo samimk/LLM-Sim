@@ -14,6 +14,7 @@ from llm_sim.engine.commands import (
     SetBusVLimits,
     SetGenDispatch,
     SetGenStatus,
+    SetGenVoltage,
     SetLoad,
     parse_command,
 )
@@ -268,3 +269,48 @@ class TestSchemaDescription:
             "set_branch_rate", "set_cost_coeffs", "set_bus_vlimits",
         ]:
             assert action in text
+
+
+# ===========================================================================
+# set_gen_voltage OPFLOW warning tests
+# ===========================================================================
+
+class TestSetGenVoltageWarning:
+
+    @pytest.fixture
+    def net(self):
+        if not _has_test_file:
+            pytest.skip("ACTIVSg200 not found")
+        return parse_matpower(ACTIVSG200)
+
+    def test_no_warning_without_application(self, net):
+        """No warning when application is not specified."""
+        cmd = SetGenVoltage(bus=189, Vg=1.02)
+        _, report = apply_modifications(net, [cmd])
+        assert not any("set_gen_voltage" in w.lower() for w in report.warnings)
+
+    def test_no_warning_for_pflow(self, net):
+        """No warning when application is pflow (set_gen_voltage is valid there)."""
+        cmd = SetGenVoltage(bus=189, Vg=1.02)
+        _, report = apply_modifications(net, [cmd], application="pflow")
+        assert not any("override" in w for w in report.warnings)
+
+    def test_warning_for_opflow(self, net):
+        """Warning emitted when application is opflow."""
+        cmd = SetGenVoltage(bus=189, Vg=1.02)
+        _, report = apply_modifications(net, [cmd], application="opflow")
+        assert any("OPFLOW" in w for w in report.warnings)
+
+    def test_command_still_applied_despite_warning(self, net):
+        """set_gen_voltage is still applied (Vg updated) even when warning fires."""
+        cmd = SetGenVoltage(bus=189, Vg=0.99)
+        modified, report = apply_modifications(net, [cmd], application="opflow")
+        assert len(report.applied) == 1
+        gen189 = next(g for g in modified.generators if g.bus == 189)
+        assert abs(gen189.Vg - 0.99) < 1e-6
+
+    def test_schema_contains_warning(self):
+        """The command schema text warns about OPFLOW for set_gen_voltage."""
+        text = command_schema_text()
+        assert "WARNING" in text
+        assert "set_bus_vlimits" in text  # points to the correct alternative

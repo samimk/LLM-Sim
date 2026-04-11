@@ -67,11 +67,18 @@ def _parse_table_rows(text: str, start_pos: int) -> list[list[str]]:
     return rows
 
 
-def parse_opflow_output(stdout: str) -> OPFLOWResult:
+def parse_opflow_output(
+    stdout: str,
+    bus_limits: dict[int, tuple[float, float]] | None = None,
+) -> OPFLOWResult:
     """Parse OPFLOW text output into structured results.
 
     Args:
         stdout: The complete stdout text from an OPFLOW run.
+        bus_limits: Optional mapping of ``bus_id -> (Vmin, Vmax)`` extracted
+            from the input MATPOWER file.  When provided, violations are
+            reported against these per-bus limits instead of the hardcoded
+            0.9/1.1 fallback.
 
     Returns:
         OPFLOWResult with all sections populated.
@@ -192,12 +199,18 @@ def parse_opflow_output(stdout: str) -> OPFLOWResult:
                 max_line_loading_pct = loading
 
     # Violations
+    _V_FALLBACK_MIN = 0.9
+    _V_FALLBACK_MAX = 1.1
     violations: list[str] = []
     for b in buses:
-        if b.Vm < 0.9:
-            violations.append(f"Bus {b.bus_id}: Vm={b.Vm:.3f} pu < 0.9 (undervoltage)")
-        if b.Vm > 1.1:
-            violations.append(f"Bus {b.bus_id}: Vm={b.Vm:.3f} pu > 1.1 (overvoltage)")
+        if bus_limits is not None and b.bus_id in bus_limits:
+            vmin, vmax = bus_limits[b.bus_id]
+        else:
+            vmin, vmax = _V_FALLBACK_MIN, _V_FALLBACK_MAX
+        if b.Vm < vmin:
+            violations.append(f"Bus {b.bus_id}: Vm={b.Vm:.3f} pu < {vmin} (undervoltage)")
+        if b.Vm > vmax:
+            violations.append(f"Bus {b.bus_id}: Vm={b.Vm:.3f} pu > {vmax} (overvoltage)")
     for br in branches:
         if br.Slim > 0:
             if br.Sf > br.Slim:
@@ -230,17 +243,26 @@ def parse_opflow_output(stdout: str) -> OPFLOWResult:
     )
 
 
-def parse_simulation_result(sim_result) -> Optional[OPFLOWResult]:
+def parse_simulation_result(
+    sim_result,
+    bus_limits: dict[int, tuple[float, float]] | None = None,
+) -> Optional[OPFLOWResult]:
     """Parse an OPFLOW SimulationResult into structured results.
 
-    Returns None if the simulation failed or output can't be parsed.
+    Args:
+        sim_result: A SimulationResult from SimulationExecutor.run().
+        bus_limits: Optional mapping of ``bus_id -> (Vmin, Vmax)`` used for
+            violation checking.  Passed through to parse_opflow_output().
+
+    Returns:
+        OPFLOWResult, or None if the simulation failed or output can't be parsed.
     """
     if not sim_result.success:
         logger.warning("Simulation did not succeed — skipping parse")
         return None
 
     try:
-        return parse_opflow_output(sim_result.stdout)
+        return parse_opflow_output(sim_result.stdout, bus_limits=bus_limits)
     except ValueError as exc:
         logger.warning("Failed to parse OPFLOW output: %s", exc)
         return None

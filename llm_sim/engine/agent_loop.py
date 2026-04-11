@@ -36,6 +36,11 @@ logger = logging.getLogger("llm_sim.engine.agent_loop")
 _MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
 
+def _bus_limits_from_network(net) -> dict[int, tuple[float, float]]:
+    """Extract per-bus (Vmin, Vmax) from a MATNetwork for violation checking."""
+    return {b.bus_i: (b.Vmin, b.Vmax) for b in net.buses}
+
+
 @dataclass
 class SearchSession:
     """Complete record of a search session."""
@@ -179,7 +184,10 @@ class AgentLoopController:
             self._config.search.application,
             iteration=0,
         )
-        opflow = parse_simulation_result(sim_result)
+        opflow = parse_simulation_result(
+            sim_result,
+            bus_limits=_bus_limits_from_network(self._base_network),
+        )
         self._latest_opflow = opflow
 
         if opflow is not None:
@@ -398,7 +406,9 @@ class AgentLoopController:
                 parse_errors.append(f"Invalid command {raw}: {exc}")
 
         if commands:
-            modified_net, report = apply_modifications(base_net, commands)
+            modified_net, report = apply_modifications(
+                base_net, commands, application=self._config.search.application
+            )
             skipped_msgs = []
             for cmd, reasons in report.skipped:
                 skipped_msgs.append(f"Skipped {cmd}: {'; '.join(reasons)}")
@@ -411,6 +421,7 @@ class AgentLoopController:
             skipped_msgs = []
 
         all_errors = parse_errors + skipped_msgs
+        all_warnings = report.warnings if commands else []
         self._print(
             f"[Iter {iteration}] Applied {applied_count} command(s), "
             f"{skipped_count} skipped"
@@ -418,6 +429,13 @@ class AgentLoopController:
 
         if all_errors:
             self._error_feedback = "Command errors:\n" + "\n".join(all_errors)
+
+        if all_warnings:
+            warning_text = "Warnings:\n" + "\n".join(all_warnings)
+            if self._error_feedback:
+                self._error_feedback += "\n\n" + warning_text
+            else:
+                self._error_feedback = warning_text
 
         # Run simulation
         if self._on_phase:
@@ -432,7 +450,10 @@ class AgentLoopController:
         # Parse results
         if self._on_phase:
             self._on_phase(iteration, "parsing_results")
-        opflow = parse_simulation_result(sim_result)
+        opflow = parse_simulation_result(
+            sim_result,
+            bus_limits=_bus_limits_from_network(modified_net),
+        )
         self._latest_opflow = opflow
 
         if opflow is not None:

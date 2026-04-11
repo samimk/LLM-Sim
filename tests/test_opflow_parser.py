@@ -181,3 +181,79 @@ class TestEdgeCases:
         result = parse_simulation_result(FakeResult())
         assert result is not None
         assert result.converged is True
+
+
+# ===========================================================================
+# Bus-limits violation checking
+# ===========================================================================
+
+def _minimal_opflow_stdout(vm_value: float) -> str:
+    """Build the minimum valid OPFLOW stdout with a single bus at *vm_value*."""
+    bus_row = f"  1    0.00    0.00    0.00    0.00    {vm_value:.4f}    0.00    0.00    0.00    0.00    0.00"
+    return (
+        "Optimal Power Flow\n"
+        "EXIT: Optimal Solution Found.\n"
+        "Model                             POWER_BALANCE_POLAR\n"
+        "Solver                            IPOPT\n"
+        "Objective                         MIN_GEN_COST\n"
+        "Convergence status                CONVERGED\n"
+        "Objective value                   1000.00\n"
+        "Bus      Pd      Pd      Qd      Qd      Vm      Va      mult_Pmis  mult_Qmis  Pslack  Qslack\n"
+        "------------------------------------------------------------\n"
+        f"{bus_row}\n"
+        "------------------------------------------------------------\n"
+    )
+
+
+class TestBusLimitsViolations:
+    """Verify that violation detection uses per-bus limits when provided."""
+
+    def test_no_violation_within_default_limits(self):
+        """Vm=1.06 is within 0.9–1.1 (default), so no violations."""
+        result = parse_opflow_output(_minimal_opflow_stdout(1.06))
+        assert result.num_violations == 0
+
+    def test_violation_against_tighter_bus_limits(self):
+        """Vm=1.06 violates Vmax=1.05 when bus_limits are provided."""
+        result = parse_opflow_output(
+            _minimal_opflow_stdout(1.06),
+            bus_limits={1: (0.95, 1.05)},
+        )
+        assert result.num_violations == 1
+        assert "Bus 1" in result.violation_details[0]
+        assert "> 1.05" in result.violation_details[0]
+
+    def test_violation_below_tighter_vmin(self):
+        """Vm=0.96 violates Vmin=0.97 when bus_limits are provided."""
+        result = parse_opflow_output(
+            _minimal_opflow_stdout(0.96),
+            bus_limits={1: (0.97, 1.05)},
+        )
+        assert result.num_violations == 1
+        assert "< 0.97" in result.violation_details[0]
+
+    def test_no_violation_with_limits_exactly_met(self):
+        """Vm exactly at Vmax should not be flagged."""
+        result = parse_opflow_output(
+            _minimal_opflow_stdout(1.05),
+            bus_limits={1: (0.95, 1.05)},
+        )
+        assert result.num_violations == 0
+
+    def test_fallback_to_hardcoded_when_bus_not_in_limits(self):
+        """If bus_limits provided but bus not in dict, fallback to 0.9/1.1."""
+        result = parse_opflow_output(
+            _minimal_opflow_stdout(1.06),
+            bus_limits={99: (0.95, 1.05)},  # bus 1 not in dict
+        )
+        assert result.num_violations == 0  # 1.06 is within 0.9-1.1
+
+    def test_parse_simulation_result_forwards_bus_limits(self):
+        """parse_simulation_result passes bus_limits to parse_opflow_output."""
+        class FakeResult:
+            success = True
+            stdout = _minimal_opflow_stdout(1.06)
+
+        result = parse_simulation_result(FakeResult(), bus_limits={1: (0.95, 1.05)})
+        assert result is not None
+        assert result.num_violations == 1

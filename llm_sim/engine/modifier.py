@@ -123,7 +123,7 @@ def _apply_one(cmd: ModCommand, net: MATNetwork) -> str:
     if isinstance(cmd, SetGenVoltage):
         gi = _gen_index_in_network(net, cmd.bus, cmd.gen_id)
         net.generators[gi].Vg = cmd.Vg
-        return f"Set generator at bus {cmd.bus} Vg={cmd.Vg} pu"
+        return f"Set generator at bus {cmd.bus} Vg={cmd.Vg} pu (initial guess only)"
 
     if isinstance(cmd, SetBranchStatus):
         bi = _branch_index_in_network(net, cmd.fbus, cmd.tbus, cmd.ckt)
@@ -158,9 +158,16 @@ def _apply_one(cmd: ModCommand, net: MATNetwork) -> str:
     return f"Unknown command type: {type(cmd).__name__}"
 
 
+_SET_GEN_VOLTAGE_OPF_WARNING = (
+    "set_gen_voltage only sets the initial guess; OPFLOW will override it with "
+    "the optimal voltage. Use set_bus_vlimits to enforce voltage constraints in OPF."
+)
+
+
 def apply_modifications(
     net: MATNetwork,
     commands: list[ModCommand],
+    application: str | None = None,
 ) -> tuple[MATNetwork, ModificationReport]:
     """Apply a list of modification commands to a network.
 
@@ -170,6 +177,9 @@ def apply_modifications(
     Args:
         net: The network to modify (not mutated).
         commands: List of commands to apply.
+        application: ExaGO application name (e.g. "opflow"). When provided and
+            equal to "opflow", a warning is added for any SetGenVoltage commands
+            because OPFLOW treats Vg as an initial guess, not a constraint.
 
     Returns:
         Tuple of (modified_network, report).
@@ -185,6 +195,11 @@ def apply_modifications(
             report.skipped.append((cmd, result.errors))
             logger.warning("Skipped invalid command %s: %s", type(cmd).__name__, result.errors)
             continue
+
+        # Emit OPF-specific warning for set_gen_voltage
+        if isinstance(cmd, SetGenVoltage) and application == "opflow":
+            report.warnings.append(_SET_GEN_VOLTAGE_OPF_WARNING)
+            logger.warning(_SET_GEN_VOLTAGE_OPF_WARNING)
 
         desc = _apply_one(cmd, modified)
         report.applied.append((cmd, desc))

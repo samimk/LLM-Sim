@@ -39,10 +39,14 @@ Available modification commands (JSON format):
    Optional: gen_id (int)
    Example: {"action": "set_gen_dispatch", "bus": 189, "Pg": 400.0}
 
-6. set_gen_voltage — Set generator voltage setpoint
+6. set_gen_voltage — Set generator voltage setpoint (initial guess only)
    Required: bus (int), Vg (float, pu — reasonable range 0.8–1.2)
    Optional: gen_id (int)
    Example: {"action": "set_gen_voltage", "bus": 189, "Vg": 1.05}
+   WARNING: In OPFLOW, bus voltages are optimization decision variables — the
+   solver will override this setpoint with its own optimal value. To actually
+   constrain bus voltages in OPF, use set_bus_vlimits (command 10) to set
+   Vmin/Vmax on the bus. This command is mainly useful for PFLOW applications.
 
 7. set_branch_status — Enable or disable a branch
    Required: fbus (int), tbus (int), status (int: 1=in-service, 0=out-of-service)

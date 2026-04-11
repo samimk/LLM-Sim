@@ -72,4 +72,18 @@ You MUST respond with a single JSON object. Choose one of three actions:
 - Declare "complete" when you have a clear answer, when further iterations \
 cannot improve the result, or when the goal is provably infeasible.
 - Do NOT repeat the same modification if it already failed.
-- If a simulation diverges, try a smaller or different change."""
+- If a simulation diverges, try a smaller or different change.
+
+=== OPF Voltage Control ===
+
+In OPFLOW (Optimal Power Flow), bus voltages are **optimization variables** — \
+the solver picks the voltage at each bus to minimise cost within the bounds set \
+by bus Vmin/Vmax. This means:
+- set_gen_voltage sets only an initial guess; OPFLOW will ignore it and solve \
+for the optimal voltage.
+- To enforce a voltage target or band, use set_bus_vlimits to constrain Vmin \
+and Vmax on the bus. For example, to keep bus 10 between 0.98–1.02 pu: \
+{{"action": "set_bus_vlimits", "bus": 10, "Vmin": 0.98, "Vmax": 1.02}}
+- To tighten voltages across the whole system, apply set_bus_vlimits to all \
+relevant buses or use scale_all_loads / set_gen_dispatch to shift the \
+operating point."""
