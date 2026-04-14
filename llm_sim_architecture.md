@@ -343,7 +343,7 @@ Key finding: the `set_all_bus_vlimits` command was essential for this test case 
 
 ---
 
-## 10. Multi-Objective Decision Making (Future)
+## 10. Multi-Objective Decision Making (Implemented)
 
 - **Tradeoff articulation:** LLM explains cost of moving between solutions in natural language.
 - **Pareto approximation:** Systematic exploration presenting non-dominated solutions.
@@ -387,10 +387,10 @@ Key finding: the `set_all_bus_vlimits` command was essential for this test case 
 |------|------|---------|
 | 2.1 | Interactive steering | ✅ Implemented |
 | 2.2 | Analyze action | ✅ Implemented (pattern-matched + LLM fallback) |
-| 2.3 | Multi-objective tracking | Journal extensions, Pareto front, preference prompts |
-| 2.4 | Session save/resume | Serialize state to disk; resume from checkpoint |
+| 2.3 | Multi-objective tracking | ✅ Implemented (objective registry, 14 metric extractors, LLM-driven tradeoff reasoning) |
+| 2.4 | Session save/resume | ✅ Implemented (CLI --resume, GUI save/load, full state serialization) |
 | 2.5 | Report generation | ✅ Implemented |
-| 2.6 | Stress test mode (D) | Adversarial prompts, combinatorial contingency exploration |
+| 2.6 | Stress test mode (D) | ✅ Implemented (adversarial prompt template, --search-mode stress_test) |
 | 2.7 | Replay mode | Replay completed sessions in the GUI |
 
 ### Phase 3 — Additional ExaGO Applications

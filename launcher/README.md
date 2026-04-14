@@ -37,8 +37,9 @@ Do **not** run `streamlit run app.py` from inside `launcher/` — paths will not
 ### Configuration Panel (Sidebar)
 - Select MATPOWER base case files from the `data/` directory
 - Choose LLM backend (Anthropic, OpenAI, Ollama, Ollama-Cloud) with auto-populated model defaults
-- Adjust temperature, search mode (accumulative/fresh), and max iterations
-- Preset goal library with common optimization tasks (minimize cost, fix voltage violations, etc.)
+- Adjust temperature, iteration mode (accumulative/fresh), and max iterations
+- Search mode selector: **Standard** (goal-directed search) or **Stress Test** (adversarial contingency exploration)
+- Preset goal library with common optimization tasks (minimize cost, fix voltage violations, stress testing, multi-objective, etc.)
 - Custom goal input via free-text area
 
 ### Live Search Monitor
@@ -59,7 +60,7 @@ Do **not** run `streamlit run app.py` from inside `launcher/` — paths will not
 
 When a search involves multiple objectives (e.g., minimize cost while constraining voltage), the results view displays:
 
-- **Multi-objective trend chart** — shows how each tracked metric evolves across iterations, with color-coded traces by priority (solid for primary, dashed for secondary, dotted for watch-only) and constraint threshold lines
+- **Multi-objective trend chart** — shows how each tracked metric evolves across iterations, with separate y-axes for metrics at different scales (e.g., cost in thousands vs voltage deviation in hundredths), color-coded traces by priority (solid for primary, dashed for secondary, dotted for watch-only), and constraint threshold lines
 - **Tradeoff analysis** — the post-search LLM analysis identifies key tradeoffs and can recommend multiple solutions
 - **Preference evolution history** — expandable section showing when objectives were registered, reprioritized, or proposed by the LLM
 
@@ -88,6 +89,15 @@ The live search monitor includes a steering panel (right column, below the progr
 
 ### Session History
 - Completed sessions are tracked in the sidebar for reference during a browser session
+
+### Session Save/Resume
+
+The sidebar includes a dedicated save/resume section:
+
+- **Save Session** — saves the current or completed search state to a timestamped directory under `workdir/`. The saved state includes the full journal, objective registry, steering history, and the current modified network
+- **Resume from** — dropdown listing previously saved sessions. Select one and click "Resume Search" to continue from where it left off. The LLM backend and configuration settings are taken from the current sidebar values, so you can resume with a different model or temperature
+
+Saved sessions are stored as a directory containing `session.json` (metadata, journal, objectives) and optionally `current_network.m` (the MATPOWER network state at the save point).
 
 ## Configuration
 

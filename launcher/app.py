@@ -24,7 +24,7 @@ import plotly.graph_objects as go
 from config_builder import (
     scan_data_files, load_example_goals, build_config_overrides,
     get_default_config_path, get_project_root, DEFAULT_MODELS, BACKENDS,
-    APPLICATIONS, FUTURE_APPLICATIONS, MODES,
+    APPLICATIONS, FUTURE_APPLICATIONS, MODES, SEARCH_MODES,
 )
 from session_manager import SessionManager
 from charts import (
@@ -94,7 +94,7 @@ def get_network_info(file_path: str) -> dict:
 # ── Start Search Logic ───────────────────────────────────────────────────────
 
 def start_search(base_case_path, goal, backend, model, temperature,
-                 application, mode, max_iterations):
+                 application, mode, max_iterations, search_mode="standard"):
     """Initialize and start a new search."""
     # Validate base case still exists
     if not Path(base_case_path).exists():
@@ -117,6 +117,7 @@ def start_search(base_case_path, goal, backend, model, temperature,
         application=application,
         default_mode=mode,
         max_iterations=max_iterations,
+        search_mode=search_mode,
     )
 
     if st.session_state.session_manager is None:
@@ -198,6 +199,10 @@ def render_sidebar() -> dict:
             st.caption(f"Coming soon: {', '.join(FUTURE_APPLICATIONS)}")
 
         mode = st.selectbox("Mode", MODES, disabled=disabled)
+        search_mode = st.selectbox(
+            "Search Mode", SEARCH_MODES, disabled=disabled,
+            help="Standard: goal-directed search. Stress Test: systematic contingency exploration.",
+        )
         max_iterations = st.slider(
             "Max iterations", 1, 50, 20, disabled=disabled,
         )
@@ -251,6 +256,7 @@ def render_sidebar() -> dict:
                 application=application,
                 mode=mode,
                 max_iterations=max_iterations,
+                search_mode=search_mode,
             )
             st.rerun()
 
@@ -271,6 +277,59 @@ def render_sidebar() -> dict:
                     f"{i + 1}. {sess_info['goal'][:40]} — {sess_info['best_obj']}"
                 )
 
+        # ── Session Save/Resume ───────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("💾 Session Save/Resume")
+
+        save_enabled = (
+            st.session_state.search_finished
+            or st.session_state.search_running
+        )
+        if st.button("Save Session", disabled=not save_enabled):
+            sm = st.session_state.session_manager
+            if sm:
+                save_path = sm.save_current_session()
+                if save_path:
+                    st.success(f"Saved to: {save_path}")
+                else:
+                    st.warning("Nothing to save.")
+
+        saved_sessions_dir = Path("workdir")
+        saved_dirs = sorted(
+            [d for d in saved_sessions_dir.glob("saved_session_*") if d.is_dir()],
+            reverse=True,
+        ) if saved_sessions_dir.exists() else []
+
+        if saved_dirs:
+            selected_save = st.selectbox(
+                "Resume from",
+                ["(none)"] + [d.name for d in saved_dirs],
+                disabled=st.session_state.search_running,
+            )
+            if selected_save != "(none)" and st.button(
+                "Resume Search", disabled=st.session_state.search_running
+            ):
+                save_dir = saved_sessions_dir / selected_save
+                overrides = build_config_overrides(
+                    base_case=".",  # will be loaded from session
+                    backend=backend,
+                    model=model,
+                    temperature=temperature,
+                    application=application,
+                    default_mode=mode,
+                    max_iterations=max_iterations,
+                    search_mode=search_mode,
+                )
+                sm = SessionManager()
+                st.session_state.session_manager = sm
+                st.session_state.search_running = True
+                st.session_state.search_finished = False
+                st.session_state.iteration_log = []
+                st.session_state.search_session = None
+                st.session_state.search_error = None
+                sm.resume_session(save_dir, overrides)
+                st.rerun()
+
     return {
         "base_case": selected_file,
         "backend": backend,
@@ -278,6 +337,7 @@ def render_sidebar() -> dict:
         "temperature": temperature,
         "application": application,
         "mode": mode,
+        "search_mode": search_mode,
         "max_iterations": max_iterations,
         "goal": goal,
     }

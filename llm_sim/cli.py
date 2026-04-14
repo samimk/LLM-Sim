@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 from dataclasses import fields
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +26,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "base_case",
-        help="Path to MATPOWER .m base case file",
+        nargs="?",
+        default=None,
+        help="Path to MATPOWER .m base case file (not needed with --resume)",
     )
     parser.add_argument(
         "goal",
-        help="Search goal in natural language (quote the string)",
+        nargs="?",
+        default=None,
+        help="Search goal in natural language (not needed with --resume)",
     )
     parser.add_argument(
         "--config",
@@ -63,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Iteration mode: accumulative, fresh",
     )
     parser.add_argument(
+        "--search-mode",
+        choices=["standard", "stress_test"],
+        help="Search mode: standard (default) or stress_test (adversarial contingency exploration)",
+    )
+    parser.add_argument(
         "--gic",
         dest="gic_file",
         help="Path to .gic file (optional)",
@@ -78,6 +88,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=None,
         help="Suppress per-iteration progress output (only show final summary)",
+    )
+    parser.add_argument(
+        "--resume",
+        metavar="DIR",
+        help="Resume a saved session from the given directory",
+    )
+    parser.add_argument(
+        "--save-on-stop",
+        action="store_true",
+        help="Automatically save session state when stopped (via 'stop' command or Ctrl+C)",
     )
     parser.add_argument(
         "--dry-run",
@@ -107,10 +127,13 @@ def _cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
         overrides["search.default_mode"] = args.mode
     if args.gic_file is not None:
         overrides["search.gic_file"] = args.gic_file
+    if args.search_mode is not None:
+        overrides["search.search_mode"] = args.search_mode
     if args.verbose is not None:
         overrides["output.verbose"] = args.verbose
-    # base_case is set via positional arg
-    overrides["search.base_case"] = args.base_case
+    # base_case is set via positional arg (may be None if --resume is used)
+    if args.base_case is not None:
+        overrides["search.base_case"] = args.base_case
     return overrides
 
 
@@ -160,6 +183,7 @@ def _start_stdin_listener(controller) -> None:
             "  pause          → pause at next iteration boundary\n"
             "  resume         → resume paused search\n"
             "  stop           → request graceful stop\n"
+            "  save           → save session to disk\n"
             "  status         → show current steering state\n"
         )
         while True:
@@ -180,6 +204,10 @@ def _start_stdin_listener(controller) -> None:
             elif lower == "stop":
                 controller.request_stop()
                 print("[Steering] Stop requested.")
+            elif lower == "save":
+                save_dir = Path(f"workdir/saved_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+                controller.save_session(save_dir)
+                print(f"[Steering] Session saved to: {save_dir}")
             elif lower == "status":
                 directives = controller.steering_history
                 print(
@@ -224,6 +252,11 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # Validate required positional args when not in resume mode
+    if not args.resume and not getattr(args, "dry_run", False):
+        if args.base_case is None or args.goal is None:
+            parser.error("base_case and goal are required (unless --resume is used)")
+
     overrides = _cli_overrides(args)
     cfg = load_config(Path(args.config), cli_overrides=overrides)
 
@@ -233,8 +266,8 @@ def main(argv: list[str] | None = None) -> None:
 
     logger.debug("CLI arguments: %s", args)
 
-    # Validate base case
-    if cfg.search.base_case and not cfg.search.base_case.exists():
+    # Validate base case (only when not resuming)
+    if not args.resume and cfg.search.base_case and not cfg.search.base_case.exists():
         if args.dry_run:
             logger.warning("Base case file does not exist: %s (dry-run, continuing)", cfg.search.base_case)
         else:
@@ -247,6 +280,22 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     quiet = getattr(args, "quiet", False) or False
+
+    # Resume mode
+    if args.resume:
+        resume_dir = Path(args.resume)
+        if not resume_dir.exists():
+            logger.error("Resume directory does not exist: %s", resume_dir)
+            sys.exit(1)
+        if not quiet:
+            print(f"Resuming session from: {resume_dir}")
+        from llm_sim.engine.agent_loop import AgentLoopController
+        controller = AgentLoopController(cfg, quiet=quiet)
+        if sys.stdin.isatty():
+            _start_stdin_listener(controller)
+        controller.resume_from(resume_dir)
+        return
+
     if not quiet:
         _print_banner(cfg, args.goal)
     run_search(cfg, args.goal, quiet=quiet)

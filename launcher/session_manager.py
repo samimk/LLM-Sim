@@ -341,3 +341,114 @@ class SessionManager:
             "type": "pause_state",
             "paused": paused,
         })
+
+    # ------------------------------------------------------------------
+    # Save / resume
+    # ------------------------------------------------------------------
+
+    def save_current_session(self, save_dir: Path | None = None) -> Path | None:
+        """Save the current or completed session to disk.
+
+        Args:
+            save_dir: Directory to save into. If None, auto-generates
+                a timestamped directory in workdir.
+
+        Returns:
+            Path to saved session directory, or None if nothing to save.
+        """
+        if self._controller is None and self._session is None:
+            return None
+
+        if save_dir is None:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_dir = Path(f"workdir/saved_session_{timestamp}")
+
+        if self._controller is not None:
+            return self._controller.save_session(save_dir)
+
+        # If search is completed, save from the session object
+        if self._session is not None:
+            from llm_sim.engine.session_io import save_session
+            return save_session(
+                save_dir=save_dir,
+                goal=self._session.goal,
+                application=self._session.application,
+                base_case_path=self._session.base_case_path,
+                config_path=None,
+                journal=self._session.journal,
+                steering_history=(
+                    self._session.preference_history
+                    if hasattr(self._session, "preference_history")
+                    else []
+                ),
+                active_steering_directives=[],
+                current_network=None,
+                total_prompt_tokens=self._session.total_prompt_tokens,
+                total_completion_tokens=self._session.total_completion_tokens,
+                last_iteration=len(self._session.journal) - 1,
+                termination_reason=self._session.termination_reason,
+            )
+        return None
+
+    def resume_session(
+        self,
+        save_dir: Path,
+        config_overrides: dict,
+        config_path: str | Path | None = None,
+    ) -> None:
+        """Resume a saved session in a background thread.
+
+        Args:
+            save_dir: Directory containing the saved session.
+            config_overrides: Config overrides from the GUI (for LLM backend, etc.).
+            config_path: Path to base config YAML.
+        """
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError("A search is already running.")
+
+        self._controller = None
+        self._session = None
+        self._error = None
+        self._base_opflow = None
+        self._best_opflow = None
+        self._best_objective = None
+        self._opflow_by_iteration = {}
+        self._goal_classification = None
+        while not self._update_queue.empty():
+            try:
+                self._update_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        if config_path is None:
+            config_path = get_default_config_path()
+        cfg = load_config(path=config_path, cli_overrides=config_overrides)
+
+        controller = AgentLoopController(
+            config=cfg,
+            quiet=True,
+            on_iteration=self._on_iteration_callback,
+            on_phase=self._on_phase_callback,
+            on_pause_state=self._on_pause_state_callback,
+        )
+        self._controller = controller
+
+        self._thread = threading.Thread(
+            target=self._run_resume,
+            args=(controller, save_dir),
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _run_resume(self, controller: AgentLoopController, save_dir: Path) -> None:
+        """Resume a saved session in a background thread."""
+        try:
+            session = controller.resume_from(save_dir)
+            self._session = session
+        except Exception as exc:
+            logger.exception("Resume thread crashed: %s", exc)
+            self._error = str(exc)
+            self._update_queue.put({"type": "error", "message": str(exc)})
+        finally:
+            self._update_queue.put({"type": "search_finished"})

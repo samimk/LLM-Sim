@@ -12,6 +12,7 @@ from llm_sim.engine.metric_extractor import available_metrics, extract_all_metri
 from llm_sim.engine.modifier import ModificationReport, apply_modifications
 from llm_sim.engine.objective_parser import build_objective_extraction_prompt, parse_objective_extraction
 from llm_sim.engine.schema_description import command_schema_text
+from llm_sim.engine.session_io import save_session, load_session
 from llm_sim.engine.validation import ValidationResult, validate_command
 from llm_sim.parsers.matpower_model import MATNetwork
 
@@ -35,9 +36,11 @@ __all__ = [
     "command_schema_text",
     "extract_all_metrics",
     "extract_metric",
+    "load_session",
     "parse_command",
     "parse_objective_extraction",
     "process_commands",
+    "save_session",
     "validate_command",
 ]
 

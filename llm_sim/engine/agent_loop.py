@@ -185,7 +185,10 @@ class AgentLoopController:
             command_schema=command_schema_text(),
             network_summary=net_summary_text,
             application=self._config.search.application,
+            search_mode=self._config.search.search_mode,
         )
+
+        self._current_goal = goal
 
         # 2. Run base case simulation (iteration 0)
         self._print("[Iter 0] Running base case simulation...")
@@ -1064,3 +1067,167 @@ class AgentLoopController:
             else:
                 self._journal.export_json(journal_path)
             print(f"\nJournal saved to: {journal_path}")
+
+    # ------------------------------------------------------------------
+    # Session save/resume
+    # ------------------------------------------------------------------
+
+    def resume_from(self, save_dir: Path) -> SearchSession:
+        """Resume a search from a saved session checkpoint.
+
+        Loads the saved state (journal, objectives, network, steering),
+        restores the controller's internal state, and continues the
+        agent loop from the next iteration.
+
+        Args:
+            save_dir: Path to the saved session directory.
+
+        Returns:
+            Completed SearchSession.
+        """
+        from llm_sim.engine.session_io import load_session
+
+        saved = load_session(save_dir)
+
+        # Restore journal
+        for entry in saved["journal_entries"]:
+            self._journal.add_entry(entry)
+
+        # Restore objective registry
+        self._journal.objective_registry = saved["objective_registry"]
+
+        # Restore steering state
+        self._steering_history = saved["steering_history"]
+        self._active_steering_directives = saved["active_steering_directives"]
+
+        # Restore token counts
+        self._total_prompt_tokens = saved["total_prompt_tokens"]
+        self._total_completion_tokens = saved["total_completion_tokens"]
+
+        # Parse base case and restore networks
+        base_case = saved["base_case_path"]
+        goal = saved["goal"]
+        self._current_goal = goal
+
+        self._base_network = parse_matpower(base_case)
+        self._current_network = saved["current_network"] or self._base_network
+
+        # Rebuild system prompt
+        net_summary_text = network_summary(self._base_network)
+        self._system_prompt = build_system_prompt(
+            command_schema=command_schema_text(),
+            network_summary=net_summary_text,
+            application=self._config.search.application,
+            search_mode=self._config.search.search_mode,
+        )
+
+        self._latest_results_text = None
+
+        last_iteration = saved["last_iteration"]
+
+        self._print(
+            f"[Resume] Loaded session with {len(self._journal)} entries, "
+            f"resuming from iteration {last_iteration + 1}"
+        )
+
+        # Notify callback for each restored entry so GUI can display them
+        if self._on_iteration:
+            for entry in saved["journal_entries"]:
+                self._on_iteration(entry.iteration, entry, "restored", None)
+
+        # Build session
+        session_start = time.monotonic()
+        session = SearchSession(
+            goal=goal,
+            application=saved["application"],
+            base_case_path=base_case,
+            config=self._config,
+            journal=self._journal,
+            start_time=datetime.now().isoformat(),
+        )
+
+        # Continue the agent loop from last_iteration + 1
+        max_iter = self._config.search.max_iterations
+        for iteration in range(last_iteration + 1, max_iter + 1):
+            if self._stop_requested:
+                session.termination_reason = "user_stopped"
+                self._print("\nSearch stopped by user.")
+                break
+            action_type, should_continue = self._iteration(iteration, goal)
+            if self._on_iteration:
+                latest_entry = self._journal.latest
+                if latest_entry:
+                    self._on_iteration(iteration, latest_entry, action_type, self._latest_opflow)
+            if not should_continue:
+                if not session.termination_reason:
+                    session.termination_reason = "completed"
+                break
+        else:
+            session.termination_reason = "max_iterations"
+            self._print(f"\nMax iterations ({max_iter}) reached.")
+
+        if not session.termination_reason:
+            session.termination_reason = "completed"
+
+        # Final notification
+        if self._on_iteration:
+            latest_entry = self._journal.latest
+            if latest_entry:
+                self._on_iteration(
+                    latest_entry.iteration, latest_entry,
+                    session.termination_reason, self._latest_opflow,
+                )
+
+        session.end_time = datetime.now().isoformat()
+        session.total_prompt_tokens = self._total_prompt_tokens
+        session.total_completion_tokens = self._total_completion_tokens
+
+        if self._current_network is not None:
+            limits = _bus_limits_from_network(self._current_network)
+            if limits:
+                session.enforced_vmin = min(v[0] for v in limits.values())
+                session.enforced_vmax = max(v[1] for v in limits.values())
+
+        elapsed = time.monotonic() - session_start
+        self._finalize(session, elapsed)
+        return session
+
+    def save_session(self, save_dir: Path, config_path: Path | str | None = None) -> Path:
+        """Save the current search state to disk for later resumption.
+
+        Args:
+            save_dir: Directory to save session files into.
+            config_path: Path to the config YAML used (for reference).
+
+        Returns:
+            Path to the saved session directory.
+        """
+        from llm_sim.engine.session_io import save_session as _save_session
+
+        last_entry = self._journal.latest
+        last_iteration = last_entry.iteration if last_entry else 0
+
+        enforced_vmin = None
+        enforced_vmax = None
+        if self._current_network is not None:
+            limits = _bus_limits_from_network(self._current_network)
+            if limits:
+                enforced_vmin = min(v[0] for v in limits.values())
+                enforced_vmax = max(v[1] for v in limits.values())
+
+        return _save_session(
+            save_dir=save_dir,
+            goal=self._current_goal if hasattr(self, "_current_goal") else "",
+            application=self._config.search.application,
+            base_case_path=self._config.search.base_case,
+            config_path=config_path,
+            journal=self._journal,
+            steering_history=self._steering_history,
+            active_steering_directives=self._active_steering_directives,
+            current_network=self._current_network,
+            total_prompt_tokens=self._total_prompt_tokens,
+            total_completion_tokens=self._total_completion_tokens,
+            last_iteration=last_iteration,
+            enforced_vmin=enforced_vmin,
+            enforced_vmax=enforced_vmax,
+        )

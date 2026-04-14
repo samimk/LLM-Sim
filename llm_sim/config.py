@@ -48,6 +48,7 @@ DEFAULTS: dict[str, Any] = {
         "base_case": None,
         "gic_file": None,
         "application": "opflow",
+        "search_mode": "standard",
     },
     "output": {
         "workdir": "./workdir",
@@ -101,6 +102,7 @@ class SearchConfig:
     base_case: Optional[Path]
     gic_file: Optional[Path]
     application: str
+    search_mode: str = "standard"  # "standard" or "stress_test"
 
 
 @dataclass(frozen=True)
@@ -260,3 +262,10 @@ def _validate(cfg: AppConfig) -> None:
     valid_modes = {"accumulative", "fresh"}
     if cfg.search.default_mode not in valid_modes:
         logger.warning("Unknown mode '%s' (expected one of %s)", cfg.search.default_mode, valid_modes)
+
+    valid_search_modes = {"standard", "stress_test"}
+    if cfg.search.search_mode not in valid_search_modes:
+        logger.warning(
+            "Unknown search_mode '%s' (expected one of %s)",
+            cfg.search.search_mode, valid_search_modes,
+        )

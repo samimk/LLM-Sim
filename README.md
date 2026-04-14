@@ -39,6 +39,7 @@ The search journal tracks every iteration, providing the LLM with a history of w
 - **Scenario exploration** — "What happens if generator at bus 189 trips offline?"
 - **Optimization** — "Minimize generation cost while keeping all voltages above 0.95 pu"
 - **Multi-objective** — "Minimize cost while keeping voltages above 0.95 pu and line loadings below 85%"
+- **Stress testing** — "Find the most critical N-1 contingencies by systematically testing line outages"
 - **Analysis** — "Report the top 5 most congested transmission lines"
 
 ## Multi-Objective Tracking
@@ -52,6 +53,40 @@ LLM-Sim can track multiple objectives simultaneously and reason about tradeoffs 
 Tracked objectives are shown in a multi-objective trend chart in the GUI and included in PDF reports. The LLM receives a structured summary of how all tracked metrics evolve across iterations, enabling it to articulate tradeoffs and make informed decisions. At the end of a search, the post-search analysis identifies the key tradeoffs and can recommend multiple solutions representing different points on the tradeoff space.
 
 The system includes 14 built-in metric extractors (generation cost, voltage deviation, line loading, active losses, generation reserve, and more). For simple single-objective goals, this infrastructure is transparent — everything works exactly as before.
+
+## Stress Test Mode
+
+LLM-Sim includes a dedicated stress test mode for adversarial contingency exploration. When activated, the LLM acts as a security analyst, systematically disabling network components to identify critical vulnerabilities.
+
+```bash
+# CLI
+llm-sim ./data/case_ACTIVSg200.m \
+  "Find the most critical N-1 contingencies" \
+  --search-mode stress_test
+```
+
+In stress test mode, the LLM always uses fresh mode (each contingency tested independently from the base case), starts with the most loaded lines, and can escalate to N-2 combinations. The post-search report ranks contingencies by severity: infeasibility > voltage violations > high line loading > cost increase.
+
+## Session Save/Resume
+
+Searches can be saved to disk and resumed later — useful for long runs, interrupted sessions, or exploring different strategies from the same checkpoint.
+
+### CLI
+
+```bash
+# During a running search, type 'save' in the terminal:
+save
+# Output: [Steering] Session saved to: workdir/saved_session_20260414_150000
+
+# Resume later:
+llm-sim --resume workdir/saved_session_20260414_150000 --config configs/local_config.yaml
+```
+
+When resuming, the goal and journal are loaded from the saved session, but the LLM backend and config settings come from the current config/CLI arguments — so you can resume with a different model or temperature.
+
+### GUI
+
+The launcher sidebar includes a "Session Save/Resume" section with a Save button (available after search completes or while running) and a dropdown to resume from previously saved sessions.
 
 ## Interactive Steering
 
@@ -69,6 +104,7 @@ When running interactively (stdin is a TTY), a background listener accepts these
 | `resume` | Resume a paused search |
 | `stop` | Request graceful termination |
 | `status` | Print current pause state and the last 3 injected directives |
+| `save` | Save the current session state to disk for later resumption |
 
 **Augment vs. replace semantics:**
 - **Augment** — adds a constraint or preference to the current goal without discarding it. Example: `Focus on buses in area 3`.
@@ -138,6 +174,13 @@ llm-sim ./data/case_ACTIVSg200.m "Minimize generation cost" \
 
 # Quiet mode (only show final summary)
 llm-sim ./data/case_ACTIVSg200.m "Analyze voltage profile" --quiet
+
+# Stress test mode (adversarial contingency exploration)
+llm-sim ./data/case_ACTIVSg200.m \
+  "Find critical N-1 contingencies" --search-mode stress_test
+
+# Resume a saved session
+llm-sim --resume workdir/saved_session_20260414_150000
 
 # Dry run (validate config without executing)
 python -m llm_sim ./data/case_ACTIVSg200.m "test goal" --dry-run
@@ -216,6 +259,9 @@ python -m pytest tests/ -v
 
 # Run multi-objective tracking tests
 python -m pytest tests/test_multi_objective.py -v
+
+# Run session save/resume tests
+python -m pytest tests/test_session_io.py -v
 
 # Run end-to-end tests (requires opflow binary)
 python -m pytest tests/test_e2e.py -v -m "not slow"

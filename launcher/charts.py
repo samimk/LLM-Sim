@@ -519,8 +519,8 @@ def multi_objective_trend_chart(
 ) -> go.Figure | None:
     """Line chart showing how each tracked objective evolves across iterations.
 
-    Each objective gets its own y-axis trace. Only shown when multiple objectives
-    are being tracked and at least two iterations have tracked_metrics data.
+    Uses multiple y-axes when metrics have different orders of magnitude,
+    so all traces are readable regardless of scale differences.
 
     Args:
         journal: SearchJournal with iteration entries.
@@ -529,6 +529,9 @@ def multi_objective_trend_chart(
     Returns:
         Plotly Figure, or None if not enough data.
     """
+    import math
+    from plotly.subplots import make_subplots
+
     registry = journal.objective_registry
     if not registry.objectives:
         return None
@@ -539,13 +542,13 @@ def multi_objective_trend_chart(
 
     obj_names = [o.name for o in registry.objectives]
 
-    fig = go.Figure()
-
     colors_list = [
         "#3498db", "#2ecc71", "#e74c3c", "#f39c12",
         "#9b59b6", "#1abc9c", "#e67e22", "#34495e",
     ]
 
+    # Collect data per objective
+    obj_data: dict[str, dict] = {}
     for idx, name in enumerate(obj_names):
         iters = []
         values = []
@@ -554,40 +557,138 @@ def multi_objective_trend_chart(
             if v is not None:
                 iters.append(e.iteration)
                 values.append(v)
+        if values:
+            obj = next(o for o in registry.objectives if o.name == name)
+            obj_data[name] = {
+                "iters": iters,
+                "values": values,
+                "obj": obj,
+                "color": colors_list[idx % len(colors_list)],
+                "max_val": max(abs(v) for v in values) if values else 0,
+            }
 
-        if not values:
-            continue
+    if not obj_data:
+        return None
 
-        obj = next(o for o in registry.objectives if o.name == name)
-        color = colors_list[idx % len(colors_list)]
+    # Group objectives by order of magnitude for axis assignment
+    def _order(v: float) -> int:
+        return int(math.floor(math.log10(max(v, 1e-10))))
+
+    sorted_names = sorted(obj_data.keys(), key=lambda n: obj_data[n]["max_val"], reverse=True)
+    axis_groups: list[list[str]] = []
+    for name in sorted_names:
+        order = _order(obj_data[name]["max_val"])
+        placed = False
+        for group in axis_groups:
+            ref_order = _order(obj_data[group[0]]["max_val"])
+            if abs(order - ref_order) <= 1:
+                group.append(name)
+                placed = True
+                break
+        if not placed:
+            axis_groups.append([name])
+
+    # Limit to 3 axes maximum
+    while len(axis_groups) > 3:
+        axis_groups[-2].extend(axis_groups[-1])
+        axis_groups.pop()
+
+    n_axes = len(axis_groups)
+
+    # Build figure with secondary y-axes if needed
+    if n_axes == 1:
+        fig = go.Figure()
+    else:
+        specs = [[{"secondary_y": True}]] if n_axes >= 2 else [[{}]]
+        fig = make_subplots(specs=specs)
+
+    # Map each objective to its axis index
+    name_to_axis: dict[str, int] = {}
+    for ax_idx, group in enumerate(axis_groups):
+        for name in group:
+            name_to_axis[name] = ax_idx
+
+    # Add traces
+    for name, data in obj_data.items():
+        obj = data["obj"]
+        color = data["color"]
         dash = "solid" if obj.priority == "primary" else "dash" if obj.priority == "secondary" else "dot"
         label = f"{name} [{obj.direction[0]}]"
+        ax_idx = name_to_axis[name]
 
-        fig.add_trace(go.Scatter(
-            x=iters,
-            y=values,
+        trace_kwargs = dict(
+            x=data["iters"],
+            y=data["values"],
             mode="lines+markers",
             name=label,
             line=dict(color=color, dash=dash),
             marker=dict(size=6),
             hovertemplate=f"{name}<br>Iter %{{x}}<br>Value: %{{y:.4f}}<extra></extra>",
-        ))
+        )
 
+        if n_axes == 1:
+            fig.add_trace(go.Scatter(**trace_kwargs))
+        elif n_axes == 2:
+            secondary = (ax_idx == 1)
+            fig.add_trace(go.Scatter(**trace_kwargs), secondary_y=secondary)
+        else:
+            if ax_idx == 0:
+                fig.add_trace(go.Scatter(**trace_kwargs))
+            elif ax_idx == 1:
+                fig.add_trace(go.Scatter(yaxis="y2", **trace_kwargs))
+            else:
+                fig.add_trace(go.Scatter(yaxis="y3", **trace_kwargs))
+
+        # Add constraint threshold line
         if obj.direction == "constraint" and obj.threshold is not None:
-            fig.add_hline(
-                y=obj.threshold,
-                line_dash="dot",
-                line_color=color,
-                annotation_text=f"{name} limit",
-                opacity=0.5,
-            )
+            if n_axes == 1:
+                fig.add_hline(
+                    y=obj.threshold, line_dash="dot", line_color=color,
+                    annotation_text=f"{name} limit", opacity=0.5,
+                )
+            elif n_axes == 2:
+                secondary = (ax_idx == 1)
+                fig.add_hline(
+                    y=obj.threshold, line_dash="dot", line_color=color,
+                    annotation_text=f"{name} limit", opacity=0.5,
+                    secondary_y=secondary,
+                )
+            else:
+                x_range = [min(data["iters"]), max(data["iters"])]
+                axis_ref = "" if ax_idx == 0 else f"y{ax_idx + 1}"
+                fig.add_trace(go.Scatter(
+                    x=x_range, y=[obj.threshold, obj.threshold],
+                    mode="lines", line=dict(color=color, dash="dot", width=1),
+                    showlegend=False, hoverinfo="skip",
+                    yaxis=axis_ref if axis_ref else None,
+                ))
 
-    fig.update_layout(
+    # Layout
+    layout_kwargs: dict = dict(
         title="Multi-Objective Trends",
         xaxis_title="Iteration",
-        yaxis_title="Metric Value",
         height=height,
-        margin=dict(l=60, r=20, t=50, b=40),
+        margin=dict(l=60, r=80 if n_axes >= 2 else 20, t=50, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
+
+    if n_axes == 1:
+        layout_kwargs["yaxis_title"] = "Metric Value"
+    elif n_axes == 2:
+        left_names = ", ".join(n[:15] for n in axis_groups[0])
+        right_names = ", ".join(n[:15] for n in axis_groups[1])
+        fig.update_yaxes(title_text=left_names, secondary_y=False)
+        fig.update_yaxes(title_text=right_names, secondary_y=True)
+    else:
+        layout_kwargs["yaxis"] = dict(title=", ".join(n[:12] for n in axis_groups[0]))
+        layout_kwargs["yaxis2"] = dict(
+            title=", ".join(n[:12] for n in axis_groups[1]),
+            overlaying="y", side="right",
+        )
+        layout_kwargs["yaxis3"] = dict(
+            title=", ".join(n[:12] for n in axis_groups[2]),
+            overlaying="y", side="right", anchor="free", position=0.95,
+        )
+
+    fig.update_layout(**layout_kwargs)
     return fig

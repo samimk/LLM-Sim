@@ -22,3 +22,6 @@ goals:
 
   - label: "Multi-objective: cost vs voltage stability"
     goal: "Minimize generation cost while simultaneously keeping all bus voltages as close to 1.0 p.u. as possible and keeping all line loadings below 85%. Report the tradeoffs between cost reduction and voltage/loading margins."
+
+  - label: "Stress test: find critical N-1 contingency"
+    goal: "Systematically test N-1 contingencies (single line outages) to identify the most critical lines whose outage causes the largest cost increase, voltage violations, or system infeasibility. Start with the most heavily loaded lines. Report a ranked list of critical contingencies."

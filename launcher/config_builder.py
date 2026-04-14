@@ -91,6 +91,9 @@ FUTURE_APPLICATIONS: list[str] = ["scopflow", "tcopflow", "sopflow", "dcopflow",
 # Available search modes
 MODES: list[str] = ["accumulative", "fresh"]
 
+# Available search mode types
+SEARCH_MODES: list[str] = ["standard", "stress_test"]
+
 
 def build_config_overrides(
     base_case: str | Path,
@@ -105,6 +108,7 @@ def build_config_overrides(
     ollama_cloud_host: str | None = None,
     openai_base_url: str | None = None,
     verbose: bool = False,
+    search_mode: str = "standard",
 ) -> dict[str, Any]:
     """Build a CLI-style overrides dict from GUI widget values.
 
@@ -133,6 +137,7 @@ def build_config_overrides(
         "search.application": application,
         "search.default_mode": default_mode,
         "search.max_iterations": max_iterations,
+        "search.search_mode": search_mode,
         "llm.backend": backend,
         "llm.model": model,
         "llm.temperature": temperature,
