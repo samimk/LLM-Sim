@@ -39,6 +39,8 @@ def build_classification_prompts(
     stats: dict[str, Any],
     journal_formatted: str,
     total_tokens: int,
+    objective_registry: list[dict] | None = None,
+    preference_history: list[dict] | None = None,
 ) -> tuple[str, str]:
     """Build the (system_prompt, user_prompt) pair for post-search goal classification.
 
@@ -68,6 +70,20 @@ def build_classification_prompts(
         f"\n"
         f"=== Detailed Journal ===\n"
         f"{journal_formatted}\n"
+    )
+
+    if objective_registry:
+        user_prompt += (
+            f"\n=== Tracked Objectives ===\n"
+            f"{json.dumps(objective_registry, indent=2)}\n"
+        )
+    if preference_history:
+        user_prompt += (
+            f"\n=== Preference History ===\n"
+            f"{json.dumps(preference_history, indent=2)}\n"
+        )
+
+    user_prompt += (
         f"\n"
         f"Please provide:\n"
         f"\n"
@@ -89,7 +105,12 @@ def build_classification_prompts(
         f'  "best_iteration": <int — the iteration number that best answers'
         f" the user's goal>,\n"
         f'  "best_iteration_rationale": "<one sentence explaining why this'
-        f' iteration is the best answer>"\n'
+        f' iteration is the best answer>",\n'
+        f'  "is_multi_objective": <true or false>,\n'
+        f'  "tradeoff_summary": "<one paragraph describing key tradeoffs between'
+        f' objectives, or null if single-objective>",\n'
+        f'  "recommended_solutions": [<list of iteration numbers for best tradeoff'
+        f' options, or just one for single-objective>]\n'
         f'}}\n'
         f"```\n"
         f"\n"
@@ -104,7 +125,7 @@ def parse_goal_classification(
 ) -> dict[str, Any] | None:
     """Extract and validate the goal classification JSON block from an LLM response.
 
-    Tries a fenced ``\`\`\`json ... \`\`\`` block first, then falls back to a
+    Tries a fenced `` ```json ... ``` `` block first, then falls back to a
     bare ``{"goal_type": ...}`` pattern.  Returns *None* if parsing or
     validation fails so callers can fall back to cost-heuristic defaults.
 
@@ -151,6 +172,9 @@ def parse_goal_classification(
                 "goal_type": goal_type,
                 "best_iteration": best_iter,
                 "best_iteration_rationale": rationale,
+                "is_multi_objective": data.get("is_multi_objective", False),
+                "tradeoff_summary": data.get("tradeoff_summary"),
+                "recommended_solutions": data.get("recommended_solutions", [best_iter]),
             }
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             logger.warning("Failed to parse goal classification JSON: %s", exc)

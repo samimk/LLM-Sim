@@ -55,6 +55,16 @@ Do **not** run `streamlit run app.py` from inside `launcher/` — paths will not
 - **Detailed Results**: Voltage profile comparison, generator dispatch chart, line loading chart, full iteration history table
 - **Analysis & Report**: On-demand LLM-generated analytical summary, auto-generated search narrative, PDF report download
 
+### Multi-Objective Tracking
+
+When a search involves multiple objectives (e.g., minimize cost while constraining voltage), the results view displays:
+
+- **Multi-objective trend chart** — shows how each tracked metric evolves across iterations, with color-coded traces by priority (solid for primary, dashed for secondary, dotted for watch-only) and constraint threshold lines
+- **Tradeoff analysis** — the post-search LLM analysis identifies key tradeoffs and can recommend multiple solutions
+- **Preference evolution history** — expandable section showing when objectives were registered, reprioritized, or proposed by the LLM
+
+Objectives can be added mid-search via the steering panel (e.g., "also track line loading"). When new objectives are added, metrics are backfilled for all previous iterations automatically.
+
 ### Interactive Steering Panel
 
 The live search monitor includes a steering panel (right column, below the progress stats) that lets you guide the LLM mid-search without stopping it.
@@ -72,7 +82,7 @@ The live search monitor includes a steering panel (right column, below the progr
 - The steering history is included in the PDF report.
 
 ### PDF Reports
-- Professional multi-page PDF with title page, executive summary, convergence charts, results comparison tables, full iteration log, and steering directive history
+- Professional multi-page PDF with title page, executive summary, convergence charts, results comparison tables, full iteration log, steering directive history, and multi-objective tracking section (when applicable)
 - Uses DejaVu Sans font for diacritics support
 - Chart images exported via Plotly/kaleido
 

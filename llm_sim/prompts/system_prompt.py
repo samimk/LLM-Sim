@@ -73,6 +73,13 @@ You MUST respond with a single JSON object. Choose one of three actions:
 cannot improve the result, or when the goal is provably infeasible.
 - Do NOT repeat the same modification if it already failed.
 - If a simulation diverges, try a smaller or different change.
+- When multiple objectives are being tracked, explain tradeoffs between them \
+in your reasoning. If you notice a tension between objectives (e.g., cost \
+decreasing but voltage stability degrading), flag it explicitly.
+- You may propose tracking additional metrics by including a "propose_objectives" \
+field in your JSON response (optional): \
+"propose_objectives": [{{"name": "<metric>", "direction": "minimize", "priority": "secondary"}}]
+- The operator can accept or reject proposed objectives via steering.
 
 === OPF Voltage Control ===
 

@@ -99,6 +99,23 @@ def _make_llm_response(json_data: Optional[dict], raw_text: str = "") -> LLMResp
     )
 
 
+def _objectives_response() -> LLMResponse:
+    """Return a valid single-objective extraction response (for test setup)."""
+    import json as _json
+    payload = _json.dumps({"objectives": [
+        {"name": "generation_cost", "direction": "minimize", "priority": "primary"},
+    ]})
+    return LLMResponse(
+        raw_text=payload,
+        json_data=None,  # The objective parser reads raw_text directly
+        json_error=None,
+        model="test-model",
+        backend="test",
+        prompt_tokens=50,
+        completion_tokens=20,
+    )
+
+
 class MockBackend(LLMBackend):
     """A mock LLM backend that returns responses from a list."""
 
@@ -147,6 +164,7 @@ class TestAgentLoopModifyComplete:
         stdout = _sample_stdout()
 
         responses = [
+            _objectives_response(),  # objective extraction call after base case
             _make_llm_response({
                 "action": "modify",
                 "reasoning": "Scale loads up 10%",
@@ -274,6 +292,7 @@ class TestErrorRecovery:
         stdout = _sample_stdout()
 
         responses = [
+            _objectives_response(),  # objective extraction call after base case
             _make_llm_response({
                 "action": "modify",
                 "reasoning": "Aggressive change",
@@ -368,7 +387,15 @@ class TestPromptAssembly:
             controller.run(BASE_CASE, "Test prompt assembly")
 
         assert len(mock_backend.calls) >= 1
-        system_prompt, user_prompt = mock_backend.calls[0]
+        # Find the main agent call (not objective extraction or classification calls)
+        # The main call is identified by having the goal text in the user prompt
+        main_call = None
+        for sys_p, usr_p in mock_backend.calls:
+            if "Test prompt assembly" in usr_p and "power systems" in sys_p.lower():
+                main_call = (sys_p, usr_p)
+                break
+        assert main_call is not None, "Main agent call not found"
+        system_prompt, user_prompt = main_call
 
         # System prompt should contain command schema and role definition
         assert "power systems" in system_prompt.lower()
@@ -426,6 +453,7 @@ class TestAnalyzeAction:
         stdout = _sample_stdout()
 
         responses = [
+            _objectives_response(),  # objective extraction call after base case
             _make_llm_response({
                 "action": "analyze",
                 "reasoning": "Need voltage info",

@@ -36,6 +36,107 @@ class JournalEntry:
     elapsed_seconds: float
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     steering_directive: Optional[str] = None  # Active steering directive at this iteration
+    tracked_metrics: Optional[dict[str, float]] = None  # Multi-objective metric values
+
+
+@dataclass
+class ObjectiveEntry:
+    """A tracked objective in the multi-objective registry."""
+
+    name: str                          # e.g. "generation_cost", "max_voltage_deviation"
+    direction: str                     # "minimize", "maximize", or "constraint"
+    threshold: Optional[float] = None  # For constraint-type objectives (e.g., ≤ 0.85)
+    priority: str = "primary"          # "primary", "secondary", or "watch"
+    introduced_at: int = 0             # Iteration when this objective was registered
+    source: str = "initial"            # "initial", "steering", or "llm_proposed"
+
+
+class ObjectiveRegistry:
+    """Tracks which objectives the search is optimizing for."""
+
+    def __init__(self) -> None:
+        self._objectives: list[ObjectiveEntry] = []
+        self._history: list[dict] = []  # Records all add/update/reprioritize events
+
+    def register(self, objective: ObjectiveEntry) -> None:
+        """Register a new objective. If an objective with the same name exists, update it."""
+        for i, existing in enumerate(self._objectives):
+            if existing.name == objective.name:
+                self._history.append({
+                    "action": "updated",
+                    "iteration": objective.introduced_at,
+                    "name": objective.name,
+                    "old_priority": existing.priority,
+                    "new_priority": objective.priority,
+                    "source": objective.source,
+                })
+                self._objectives[i] = objective
+                return
+        self._objectives.append(objective)
+        self._history.append({
+            "action": "registered",
+            "iteration": objective.introduced_at,
+            "name": objective.name,
+            "direction": objective.direction,
+            "priority": objective.priority,
+            "source": objective.source,
+        })
+
+    def reprioritize(self, name: str, new_priority: str, iteration: int, source: str = "steering") -> bool:
+        """Change the priority of an existing objective. Returns True if found."""
+        for obj in self._objectives:
+            if obj.name == name:
+                old = obj.priority
+                obj.priority = new_priority
+                self._history.append({
+                    "action": "reprioritized",
+                    "iteration": iteration,
+                    "name": name,
+                    "old_priority": old,
+                    "new_priority": new_priority,
+                    "source": source,
+                })
+                return True
+        return False
+
+    @property
+    def objectives(self) -> list[ObjectiveEntry]:
+        return list(self._objectives)
+
+    @property
+    def history(self) -> list[dict]:
+        return list(self._history)
+
+    @property
+    def is_multi_objective(self) -> bool:
+        """True if more than one objective is registered (excluding 'watch' priority)."""
+        active = [o for o in self._objectives if o.priority != "watch"]
+        return len(active) > 1
+
+    def get_primary(self) -> list[ObjectiveEntry]:
+        return [o for o in self._objectives if o.priority == "primary"]
+
+    def get_secondary(self) -> list[ObjectiveEntry]:
+        return [o for o in self._objectives if o.priority == "secondary"]
+
+    def format_for_prompt(self) -> str:
+        """Format the registry for injection into the LLM prompt."""
+        if not self._objectives:
+            return ""
+        lines = ["Tracked Objectives:"]
+        for obj in self._objectives:
+            dir_label = obj.direction
+            if obj.direction == "constraint" and obj.threshold is not None:
+                dir_label = f"constraint (\u2264 {obj.threshold})"
+            lines.append(
+                f"  - {obj.name} [{dir_label}] priority={obj.priority}"
+                f" (since iter {obj.introduced_at}, source: {obj.source})"
+            )
+        return "\n".join(lines)
+
+    def to_dict_list(self) -> list[dict]:
+        """Serialize for JSON export."""
+        return [asdict(o) for o in self._objectives]
 
 
 class SearchJournal:
@@ -43,6 +144,7 @@ class SearchJournal:
 
     def __init__(self) -> None:
         self._entries: list[JournalEntry] = []
+        self.objective_registry = ObjectiveRegistry()
 
     def add_entry(self, entry: JournalEntry) -> None:
         """Append an entry to the journal."""
@@ -239,8 +341,82 @@ class SearchJournal:
             parts.append(f"LLM reasoning: {e.llm_reasoning}")
             if e.steering_directive:
                 parts.append(f"Steering directive: {e.steering_directive}")
+            if e.tracked_metrics:
+                parts.append(f"Tracked metrics: {json.dumps(e.tracked_metrics, indent=2)}")
 
         return "\n".join(parts)
+
+    def format_multi_objective_summary(self, max_entries: int | None = None) -> str:
+        """Format a multi-objective tracking table for LLM prompt injection.
+
+        Shows how each tracked metric has evolved across iterations.
+        Only includes iterations that have tracked_metrics data.
+        """
+        registry = self.objective_registry
+        if not registry.objectives:
+            return ""
+
+        tracked_entries = [e for e in self._entries if e.tracked_metrics]
+        if not tracked_entries:
+            return ""
+
+        obj_names = [o.name for o in registry.objectives]
+
+        # Apply max_entries limit
+        if max_entries is not None and len(tracked_entries) > max_entries:
+            display_entries = [tracked_entries[0]] + tracked_entries[-(max_entries - 1):]
+            omitted = True
+            omitted_range = (2, len(tracked_entries) - (max_entries - 1))
+        else:
+            display_entries = tracked_entries
+            omitted = False
+            omitted_range = (0, 0)
+
+        # Build header
+        col_headers = ["Iter"]
+        for name in obj_names:
+            obj = next(o for o in registry.objectives if o.name == name)
+            short = name[:18]
+            col_headers.append(f"{short}({obj.direction[0]})")
+
+        header = " | ".join(f"{h:>20}" for h in col_headers)
+        sep = "-" * len(header)
+
+        lines = [
+            f"Multi-Objective Tracking ({len(tracked_entries)} iterations, "
+            f"{len(obj_names)} objectives):",
+            "",
+            header,
+            sep,
+        ]
+
+        for e in display_entries:
+            vals = [f"{e.iteration:>20}"]
+            for name in obj_names:
+                v = e.tracked_metrics.get(name)
+                if v is not None:
+                    vals.append(f"{v:>20.4f}")
+                else:
+                    vals.append(f"{'N/A':>20}")
+            lines.append(" | ".join(vals))
+            if omitted and e is display_entries[0]:
+                lines.append(f"  ... (iterations {omitted_range[0]}-{omitted_range[1]} omitted)")
+
+        # Trend analysis
+        if len(tracked_entries) >= 2:
+            lines.append("")
+            lines.append("Trends (first tracked \u2192 latest):")
+            first = tracked_entries[0]
+            last = tracked_entries[-1]
+            for name in obj_names:
+                v0 = first.tracked_metrics.get(name)
+                vn = last.tracked_metrics.get(name)
+                if v0 is not None and vn is not None and v0 != 0:
+                    delta_pct = (vn - v0) / abs(v0) * 100
+                    direction = "\u2191" if vn > v0 else "\u2193" if vn < v0 else "\u2192"
+                    lines.append(f"  {name}: {v0:.4f} \u2192 {vn:.4f} ({delta_pct:+.1f}%) {direction}")
+
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Export
@@ -248,7 +424,11 @@ class SearchJournal:
 
     def export_json(self, path: Path) -> None:
         """Export the journal to a JSON file."""
-        data = [asdict(e) for e in self._entries]
+        data = {
+            "entries": [asdict(e) for e in self._entries],
+            "objective_registry": self.objective_registry.to_dict_list(),
+            "preference_history": self.objective_registry.history,
+        }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         logger.info("Journal exported to %s (%d entries)", path, len(self._entries))
 
@@ -264,6 +444,7 @@ class SearchJournal:
             "voltage_min", "voltage_max", "max_line_loading_pct",
             "total_gen_mw", "total_load_mw", "llm_reasoning",
             "mode", "elapsed_seconds", "timestamp", "steering_directive",
+            "tracked_metrics",
         ]
 
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -272,6 +453,7 @@ class SearchJournal:
             for e in self._entries:
                 row = asdict(e)
                 row["commands"] = json.dumps(row["commands"])
+                row["tracked_metrics"] = json.dumps(row.get("tracked_metrics") or {})
                 writer.writerow(row)
 
         logger.info("Journal CSV exported to %s (%d entries)", path, len(self._entries))
@@ -309,6 +491,8 @@ class SearchJournal:
                 "objective_trend": [],
                 "voltage_range_trend": [],
                 "goal_type": goal_type,
+                "objective_registry": self.objective_registry.to_dict_list(),
+                "is_multi_objective": self.objective_registry.is_multi_objective,
             }
 
         feasible = [e for e in self._entries if e.feasible and e.objective_value is not None]
@@ -341,6 +525,8 @@ class SearchJournal:
                 (e.voltage_min, e.voltage_max) for e in self._entries
             ],
             "goal_type": goal_type,
+            "objective_registry": self.objective_registry.to_dict_list(),
+            "is_multi_objective": self.objective_registry.is_multi_objective,
         }
 
     @staticmethod

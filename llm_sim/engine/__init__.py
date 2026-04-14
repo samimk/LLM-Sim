@@ -7,8 +7,10 @@ import logging
 from llm_sim.engine.agent_loop import AgentLoopController, SearchSession
 from llm_sim.engine.commands import ModCommand, parse_command
 from llm_sim.engine.executor import SimulationExecutor, SimulationResult
-from llm_sim.engine.journal import JournalEntry, SearchJournal
+from llm_sim.engine.journal import JournalEntry, ObjectiveEntry, ObjectiveRegistry, SearchJournal
+from llm_sim.engine.metric_extractor import available_metrics, extract_all_metrics, extract_metric
 from llm_sim.engine.modifier import ModificationReport, apply_modifications
+from llm_sim.engine.objective_parser import build_objective_extraction_prompt, parse_objective_extraction
 from llm_sim.engine.schema_description import command_schema_text
 from llm_sim.engine.validation import ValidationResult, validate_command
 from llm_sim.parsers.matpower_model import MATNetwork
@@ -20,14 +22,21 @@ __all__ = [
     "JournalEntry",
     "ModCommand",
     "ModificationReport",
+    "ObjectiveEntry",
+    "ObjectiveRegistry",
     "SearchJournal",
     "SearchSession",
     "SimulationExecutor",
     "SimulationResult",
     "ValidationResult",
     "apply_modifications",
+    "available_metrics",
+    "build_objective_extraction_prompt",
     "command_schema_text",
+    "extract_all_metrics",
+    "extract_metric",
     "parse_command",
+    "parse_objective_extraction",
     "process_commands",
     "validate_command",
 ]

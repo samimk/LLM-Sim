@@ -19,3 +19,6 @@ goals:
 
   - label: "N-1 security improvement"
     goal: "Improve the network's ability to handle single contingencies by reducing the loading on the most heavily loaded lines to below 75%, adjusting generator dispatch as needed while maintaining voltage limits."
+
+  - label: "Multi-objective: cost vs voltage stability"
+    goal: "Minimize generation cost while simultaneously keeping all bus voltages as close to 1.0 p.u. as possible and keeping all line loadings below 85%. Report the tradeoffs between cost reduction and voltage/loading margins."

@@ -29,7 +29,7 @@ from config_builder import (
 from session_manager import SessionManager
 from charts import (
     convergence_chart, voltage_range_chart, voltage_profile_chart,
-    generator_dispatch_chart, line_loading_chart,
+    generator_dispatch_chart, line_loading_chart, multi_objective_trend_chart,
 )
 
 from llm_sim.parsers import parse_matpower, network_summary
@@ -837,6 +837,37 @@ def _render_overview_tab(session):
         height=350,
     )
     st.plotly_chart(fig_v, width="stretch")
+
+    # Multi-objective section (only when applicable)
+    if session.journal.objective_registry.is_multi_objective:
+        st.subheader("📐 Multi-Objective Tracking")
+        if gc and gc.get("is_multi_objective") and gc.get("tradeoff_summary"):
+            st.info(f"**Tradeoff Analysis:** {gc['tradeoff_summary']}")
+        if gc and gc.get("recommended_solutions"):
+            recs = gc["recommended_solutions"]
+            if len(recs) > 1:
+                st.write(f"**Recommended tradeoff solutions:** iterations {recs}")
+        mo_chart = multi_objective_trend_chart(session.journal)
+        if mo_chart is not None:
+            st.plotly_chart(mo_chart, use_container_width=True)
+        pref_history = session.journal.objective_registry.history
+        if pref_history:
+            with st.expander("Preference Evolution History"):
+                for event in pref_history:
+                    action = event.get("action", "?")
+                    name = event.get("name", "?")
+                    src = event.get("source", "?")
+                    itr = event.get("iteration", "?")
+                    if action == "reprioritized":
+                        st.text(
+                            f"Iter {itr}: reprioritized '{name}' [{src}] "
+                            f"{event.get('old_priority', '?')} → {event.get('new_priority', '?')}"
+                        )
+                    else:
+                        st.text(
+                            f"Iter {itr}: {action} '{name}' [{src}] "
+                            f"({event.get('direction', '?')}, {event.get('priority', '?')})"
+                        )
 
 
 # ── Tab 2: Detailed Results ──────────────────────────────────────────────────

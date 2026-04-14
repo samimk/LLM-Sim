@@ -509,3 +509,85 @@ def line_loading_chart(
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     return fig
+
+
+# ── Chart 6: Multi-Objective Trend ──────────────────────────────────────────
+
+def multi_objective_trend_chart(
+    journal: SearchJournal,
+    height: int = 450,
+) -> go.Figure | None:
+    """Line chart showing how each tracked objective evolves across iterations.
+
+    Each objective gets its own y-axis trace. Only shown when multiple objectives
+    are being tracked and at least two iterations have tracked_metrics data.
+
+    Args:
+        journal: SearchJournal with iteration entries.
+        height: Chart height in pixels.
+
+    Returns:
+        Plotly Figure, or None if not enough data.
+    """
+    registry = journal.objective_registry
+    if not registry.objectives:
+        return None
+
+    tracked_entries = [e for e in journal.entries if e.tracked_metrics]
+    if len(tracked_entries) < 2:
+        return None
+
+    obj_names = [o.name for o in registry.objectives]
+
+    fig = go.Figure()
+
+    colors_list = [
+        "#3498db", "#2ecc71", "#e74c3c", "#f39c12",
+        "#9b59b6", "#1abc9c", "#e67e22", "#34495e",
+    ]
+
+    for idx, name in enumerate(obj_names):
+        iters = []
+        values = []
+        for e in tracked_entries:
+            v = e.tracked_metrics.get(name)
+            if v is not None:
+                iters.append(e.iteration)
+                values.append(v)
+
+        if not values:
+            continue
+
+        obj = next(o for o in registry.objectives if o.name == name)
+        color = colors_list[idx % len(colors_list)]
+        dash = "solid" if obj.priority == "primary" else "dash" if obj.priority == "secondary" else "dot"
+        label = f"{name} [{obj.direction[0]}]"
+
+        fig.add_trace(go.Scatter(
+            x=iters,
+            y=values,
+            mode="lines+markers",
+            name=label,
+            line=dict(color=color, dash=dash),
+            marker=dict(size=6),
+            hovertemplate=f"{name}<br>Iter %{{x}}<br>Value: %{{y:.4f}}<extra></extra>",
+        ))
+
+        if obj.direction == "constraint" and obj.threshold is not None:
+            fig.add_hline(
+                y=obj.threshold,
+                line_dash="dot",
+                line_color=color,
+                annotation_text=f"{name} limit",
+                opacity=0.5,
+            )
+
+    fig.update_layout(
+        title="Multi-Objective Trends",
+        xaxis_title="Iteration",
+        yaxis_title="Metric Value",
+        height=height,
+        margin=dict(l=60, r=20, t=50, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig

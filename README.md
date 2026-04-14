@@ -38,7 +38,20 @@ The search journal tracks every iteration, providing the LLM with a history of w
 - **Boundary finding** — "Find the maximum load scaling factor before infeasibility"
 - **Scenario exploration** — "What happens if generator at bus 189 trips offline?"
 - **Optimization** — "Minimize generation cost while keeping all voltages above 0.95 pu"
+- **Multi-objective** — "Minimize cost while keeping voltages above 0.95 pu and line loadings below 85%"
 - **Analysis** — "Report the top 5 most congested transmission lines"
+
+## Multi-Objective Tracking
+
+LLM-Sim can track multiple objectives simultaneously and reason about tradeoffs between them. Objectives can be introduced in three ways:
+
+- **From the initial goal** — the LLM extracts objectives automatically (e.g., "minimize cost while keeping voltages above 0.95" registers cost as primary and voltage as a constraint)
+- **Via steering** — inject a directive mid-search like "also track line loading" to add a secondary objective
+- **LLM-proposed** — the agent itself can propose tracking a new metric when it notices a tension (e.g., cost decreasing but voltage stability degrading)
+
+Tracked objectives are shown in a multi-objective trend chart in the GUI and included in PDF reports. The LLM receives a structured summary of how all tracked metrics evolve across iterations, enabling it to articulate tradeoffs and make informed decisions. At the end of a search, the post-search analysis identifies the key tradeoffs and can recommend multiple solutions representing different points on the tradeoff space.
+
+The system includes 14 built-in metric extractors (generation cost, voltage deviation, line loading, active losses, generation reserve, and more). For simple single-objective goals, this infrastructure is transparent — everything works exactly as before.
 
 ## Interactive Steering
 
@@ -200,6 +213,9 @@ export OPENAI_API_KEY="your-key-here"
 ```bash
 # Run all unit tests
 python -m pytest tests/ -v
+
+# Run multi-objective tracking tests
+python -m pytest tests/test_multi_objective.py -v
 
 # Run end-to-end tests (requires opflow binary)
 python -m pytest tests/test_e2e.py -v -m "not slow"

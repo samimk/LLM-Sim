@@ -17,8 +17,13 @@ from llm_sim.backends.base import LLMBackend, LLMResponse
 from llm_sim.config import AppConfig
 from llm_sim.engine.commands import parse_command
 from llm_sim.engine.executor import SimulationExecutor, SimulationResult
-from llm_sim.engine.journal import JournalEntry, SearchJournal
+from llm_sim.engine.journal import JournalEntry, ObjectiveEntry, SearchJournal
+from llm_sim.engine.metric_extractor import available_metrics, extract_all_metrics
 from llm_sim.engine.modifier import apply_modifications
+from llm_sim.engine.objective_parser import (
+    build_objective_extraction_prompt,
+    parse_objective_extraction,
+)
 from llm_sim.engine.schema_description import command_schema_text
 from llm_sim.parsers import (
     parse_matpower,
@@ -60,6 +65,8 @@ class SearchSession:
     analysis_text: Optional[str] = None
     enforced_vmin: Optional[float] = None
     enforced_vmax: Optional[float] = None
+    objective_registry_data: Optional[list[dict]] = None
+    preference_history: Optional[list[dict]] = None
 
 
 class AgentLoopController:
@@ -102,6 +109,7 @@ class AgentLoopController:
         self._consecutive_parse_failures = 0
         self._total_prompt_tokens = 0
         self._total_completion_tokens = 0
+        self._opflow_results_cache: dict[int, OPFLOWResult] = {}
 
     # ------------------------------------------------------------------
     # Output helper
@@ -195,6 +203,7 @@ class AgentLoopController:
         if opflow is not None:
             self._latest_results_text = results_summary(opflow)
             self._base_opflow_result = opflow
+            self._opflow_results_cache[0] = opflow
             self._journal.add_from_results(
                 iteration=0,
                 description="Base case (no modifications)",
@@ -223,6 +232,16 @@ class AgentLoopController:
                 f"Base case simulation failed: {sim_result.error_message or 'unknown error'}"
             )
             self._print(f"[Iter 0] Base case simulation FAILED: {sim_result.error_message}")
+
+        # 2b. Extract initial objectives from goal
+        self._extract_initial_objectives(goal)
+
+        # Backfill base case metrics now that objectives are registered
+        if self._latest_opflow is not None:
+            metric_names = [o.name for o in self._journal.objective_registry.objectives]
+            base_metrics = extract_all_metrics(self._latest_opflow, metric_names)
+            if base_metrics and self._journal.latest:
+                self._journal.latest.tracked_metrics = base_metrics
 
         # Notify callback after base case
         if self._on_iteration:
@@ -292,6 +311,7 @@ class AgentLoopController:
     ) -> tuple[str, bool]:
         """Execute one iteration. Returns (action_type, should_continue)."""
         # Drain the steering queue at the iteration boundary
+        new_directives: list[dict] = []
         while True:
             try:
                 item = self._steering_queue.get_nowait()
@@ -303,9 +323,14 @@ class AgentLoopController:
                 self._active_steering_directives.clear()
             self._active_steering_directives.append(item)
             self._steering_history.append({"iteration": iteration, **item})
+            new_directives.append(item)
             self._print(
                 f"[Iter {iteration}] Steering [{mode.upper()}]: \"{directive[:80]}\""
             )
+
+        # Extract objectives from any new steering directives
+        for sd in new_directives:
+            self._extract_objectives_from_steering(sd["directive"], iteration)
 
         # Pause: block here until resume() is called
         self._pause_event.wait()
@@ -464,6 +489,8 @@ class AgentLoopController:
             bus_limits=_bus_limits_from_network(modified_net),
         )
         self._latest_opflow = opflow
+        if opflow is not None:
+            self._opflow_results_cache[iteration] = opflow
 
         if opflow is not None:
             self._latest_results_text = results_summary(opflow)
@@ -486,6 +513,27 @@ class AgentLoopController:
                 f"{sim_result.elapsed_seconds:.2f}s — {error_msg}"
             )
 
+        # Check for LLM-proposed objectives
+        proposed = data.get("propose_objectives", [])
+        if proposed and isinstance(proposed, list):
+            for prop in proposed:
+                name = prop.get("name", "")
+                if name:
+                    entry = ObjectiveEntry(
+                        name=name,
+                        direction=prop.get("direction", "minimize"),
+                        threshold=prop.get("threshold"),
+                        priority=prop.get("priority", "secondary"),
+                        introduced_at=iteration,
+                        source="llm_proposed",
+                    )
+                    self._journal.objective_registry.register(entry)
+                    self._print(
+                        f"[Objectives] LLM proposed: {name} ({entry.direction}, {entry.priority})"
+                    )
+            if proposed:
+                self._backfill_metrics()
+
         # Update journal
         active_directive = (
             self._active_steering_directives[-1]["directive"]
@@ -501,6 +549,13 @@ class AgentLoopController:
             mode=mode,
             steering_directive=active_directive,
         )
+
+        # Extract tracked metrics for multi-objective tracking
+        if opflow is not None:
+            metric_names = [o.name for o in self._journal.objective_registry.objectives]
+            metrics = extract_all_metrics(opflow, metric_names)
+            if metrics and self._journal.latest:
+                self._journal.latest.tracked_metrics = metrics
 
         return "modify", True
 
@@ -734,6 +789,97 @@ class AgentLoopController:
             )
 
     # ------------------------------------------------------------------
+    # Multi-objective helpers
+    # ------------------------------------------------------------------
+
+    def _extract_initial_objectives(self, goal: str) -> None:
+        """Use the LLM to extract tracked objectives from the initial goal."""
+        try:
+            sys_prompt, user_prompt = build_objective_extraction_prompt(
+                text=goal,
+                available_metrics=available_metrics(),
+                context="initial_goal",
+            )
+            response = self._backend.complete(sys_prompt, user_prompt)
+            parsed = parse_objective_extraction(response.raw_text)
+            if parsed:
+                for obj_data in parsed:
+                    entry = ObjectiveEntry(
+                        name=obj_data["name"],
+                        direction=obj_data["direction"],
+                        threshold=obj_data.get("threshold"),
+                        priority=obj_data["priority"],
+                        introduced_at=0,
+                        source="initial",
+                    )
+                    self._journal.objective_registry.register(entry)
+                self._print(
+                    f"[Objectives] Registered {len(parsed)} objective(s): "
+                    f"{', '.join(o['name'] for o in parsed)}"
+                )
+            else:
+                self._journal.objective_registry.register(ObjectiveEntry(
+                    name="generation_cost",
+                    direction="minimize",
+                    priority="primary",
+                    introduced_at=0,
+                    source="initial",
+                ))
+                self._print("[Objectives] Defaulted to generation_cost (minimize)")
+        except Exception as exc:
+            logger.warning("Failed to extract initial objectives: %s", exc)
+            self._journal.objective_registry.register(ObjectiveEntry(
+                name="generation_cost",
+                direction="minimize",
+                priority="primary",
+                introduced_at=0,
+                source="initial",
+            ))
+
+    def _extract_objectives_from_steering(self, directive: str, iteration: int) -> None:
+        """Extract any new objectives from a steering directive."""
+        try:
+            sys_prompt, user_prompt = build_objective_extraction_prompt(
+                text=directive,
+                available_metrics=available_metrics(),
+                context="steering_directive",
+            )
+            response = self._backend.complete(sys_prompt, user_prompt)
+            parsed = parse_objective_extraction(response.raw_text)
+            if parsed:
+                for obj_data in parsed:
+                    entry = ObjectiveEntry(
+                        name=obj_data["name"],
+                        direction=obj_data["direction"],
+                        threshold=obj_data.get("threshold"),
+                        priority=obj_data["priority"],
+                        introduced_at=iteration,
+                        source="steering",
+                    )
+                    self._journal.objective_registry.register(entry)
+                self._print(
+                    f"[Objectives] Steering added/updated {len(parsed)} objective(s): "
+                    f"{', '.join(o['name'] for o in parsed)}"
+                )
+                self._backfill_metrics()
+        except Exception as exc:
+            logger.warning("Failed to extract objectives from steering: %s", exc)
+
+    def _backfill_metrics(self) -> None:
+        """Backfill tracked metrics for all past iterations from stored OPFLOW results.
+
+        Called when new objectives are registered mid-search, so earlier
+        iterations get the newly tracked metric values.
+        """
+        metric_names = [o.name for o in self._journal.objective_registry.objectives]
+        for entry in self._journal.entries:
+            if entry.mode == "analyze":
+                continue
+            opflow = self._opflow_results_cache.get(entry.iteration)
+            if opflow is not None:
+                entry.tracked_metrics = extract_all_metrics(opflow, metric_names)
+
+    # ------------------------------------------------------------------
     # Prompt assembly
     # ------------------------------------------------------------------
 
@@ -748,12 +894,25 @@ class AgentLoopController:
         journal_text = (
             self._journal.format_for_prompt() if len(self._journal) > 0 else None
         )
+
+        # Multi-objective context
+        multi_obj_text = None
+        registry = self._journal.objective_registry
+        if registry.objectives:
+            parts = [registry.format_for_prompt()]
+            mo_summary = self._journal.format_multi_objective_summary()
+            if mo_summary:
+                parts.append("")
+                parts.append(mo_summary)
+            multi_obj_text = "\n".join(parts)
+
         user_prompt = build_user_prompt(
             goal=goal,
             journal_text=journal_text,
             results_text=latest_results_text,
             error_feedback=error_feedback,
             steering_directives=steering_directives,
+            multi_objective_text=multi_obj_text,
         )
         return self._system_prompt, user_prompt
 
@@ -776,6 +935,8 @@ class AgentLoopController:
                 stats=raw_stats,
                 journal_formatted=self._journal.format_detailed(),
                 total_tokens=total_tokens,
+                objective_registry=self._journal.objective_registry.to_dict_list(),
+                preference_history=self._journal.objective_registry.history,
             )
             response = self._backend.complete(sys_prompt, user_prompt)
             analysis_text = response.raw_text
@@ -799,6 +960,8 @@ class AgentLoopController:
         # Store on session for downstream consumers (GUI, tests)
         session.goal_classification = goal_classification
         session.analysis_text = analysis_text
+        session.objective_registry_data = self._journal.objective_registry.to_dict_list()
+        session.preference_history = self._journal.objective_registry.history
 
         # Always print the final summary (even in quiet mode)
         print()
@@ -867,6 +1030,26 @@ class AgentLoopController:
             if len(analysis_text) > 500:
                 snippet += f"\n  ... ({len(analysis_text) - 500} chars truncated)"
             print(snippet)
+
+        # Multi-objective summary
+        registry = self._journal.objective_registry
+        if registry.is_multi_objective:
+            print()
+            print("─" * 60)
+            print("  Multi-Objective Summary:")
+            print("─" * 60)
+            for obj in registry.objectives:
+                dir_str = obj.direction
+                if obj.direction == "constraint" and obj.threshold is not None:
+                    dir_str = f"constraint (\u2264 {obj.threshold})"
+                print(f"  {obj.name}: {dir_str} [{obj.priority}] (from iter {obj.introduced_at})")
+            if goal_classification and goal_classification.get("tradeoff_summary"):
+                print()
+                print(f"  Tradeoffs: {goal_classification['tradeoff_summary']}")
+            if goal_classification and goal_classification.get("recommended_solutions"):
+                recs = goal_classification["recommended_solutions"]
+                if len(recs) > 1:
+                    print(f"  Recommended solutions: iterations {recs}")
 
         # Save journal if configured
         if self._config.output.save_journal:

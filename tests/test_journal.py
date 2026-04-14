@@ -232,18 +232,20 @@ class TestExportJSON:
         j.export_json(out)
 
         data = json.loads(out.read_text())
-        assert len(data) == 2
-        assert data[0]["iteration"] == 1
-        assert data[0]["objective_value"] == 1000.0
-        assert data[1]["iteration"] == 2
-        assert isinstance(data[0]["commands"], list)
+        assert "entries" in data
+        assert len(data["entries"]) == 2
+        assert data["entries"][0]["iteration"] == 1
+        assert data["entries"][0]["objective_value"] == 1000.0
+        assert data["entries"][1]["iteration"] == 2
+        assert isinstance(data["entries"][0]["commands"], list)
 
     def test_export_json_empty(self, tmp_path: Path):
         j = SearchJournal()
         out = tmp_path / "journal.json"
         j.export_json(out)
         data = json.loads(out.read_text())
-        assert data == []
+        assert data["entries"] == []
+        assert "objective_registry" in data
 
 
 class TestExportCSV:

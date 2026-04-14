@@ -76,6 +76,23 @@ def _mock_response(json_data: Optional[dict]) -> LLMResponse:
     )
 
 
+def _objectives_response() -> LLMResponse:
+    """Return a valid objective extraction response (for test setup)."""
+    import json as _json
+    payload = _json.dumps({"objectives": [
+        {"name": "generation_cost", "direction": "minimize", "priority": "primary"},
+    ]})
+    return LLMResponse(
+        raw_text=payload,
+        json_data=None,
+        json_error=None,
+        model="mock-model",
+        backend="mock",
+        prompt_tokens=50,
+        completion_tokens=20,
+    )
+
+
 def _make_config(
     tmp_path: Path,
     max_iterations: int = 3,
@@ -173,6 +190,7 @@ class TestE2EMockLLMRealOpflow:
         )
 
         responses = [
+            _objectives_response(),  # objective extraction call after base case
             _mock_response({
                 "action": "modify",
                 "reasoning": "Testing small load increase.",

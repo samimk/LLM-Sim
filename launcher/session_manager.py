@@ -219,12 +219,20 @@ class SessionManager:
             stats = session.journal.summary_stats()
             total_tokens = session.total_prompt_tokens + session.total_completion_tokens
 
+            objective_registry = None
+            preference_history = None
+            if hasattr(session.journal, "objective_registry"):
+                objective_registry = session.journal.objective_registry.to_dict_list()
+                preference_history = session.journal.objective_registry.history
+
             system_prompt, user_prompt = build_classification_prompts(
                 goal=session.goal,
                 termination_reason=session.termination_reason,
                 stats=stats,
                 journal_formatted=session.journal.format_detailed(),
                 total_tokens=total_tokens,
+                objective_registry=objective_registry,
+                preference_history=preference_history,
             )
 
             response = backend.complete(system_prompt, user_prompt)
@@ -238,6 +246,22 @@ class SessionManager:
         except Exception as exc:
             logger.warning("Failed to generate summary analysis: %s", exc)
             return f"Summary analysis could not be generated: {exc}"
+
+    def get_objective_registry(self) -> list[dict] | None:
+        """Get the objective registry data from the running or completed session."""
+        if self._session and hasattr(self._session, "objective_registry_data"):
+            return self._session.objective_registry_data
+        if self._controller and hasattr(self._controller, "_journal"):
+            return self._controller._journal.objective_registry.to_dict_list()
+        return None
+
+    def get_preference_history(self) -> list[dict] | None:
+        """Get the preference evolution history."""
+        if self._session and hasattr(self._session, "preference_history"):
+            return self._session.preference_history
+        if self._controller and hasattr(self._controller, "_journal"):
+            return self._controller._journal.objective_registry.history
+        return None
 
     # ------------------------------------------------------------------
     # Private methods
@@ -299,6 +323,7 @@ class SessionManager:
             "commands_count": len(entry.commands),
             "commands": entry.commands,
             "mode": entry.mode,
+            "tracked_metrics": entry.tracked_metrics,
         }
         self._update_queue.put(update)
 

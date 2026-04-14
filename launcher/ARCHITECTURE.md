@@ -91,7 +91,7 @@ The `on_phase(iteration, phase_name)` callback receives:
 
 This is the **only change** to existing `llm_sim/` code. The callback parameters are optional, defaulting to `None`, so CLI usage is completely unaffected.
 
-**Note**: `AgentLoopController` was extended beyond callbacks to also support interactive steering (steering queue, pause/resume via `threading.Event`, `inject_steering()`, `pause()`, `resume()`, `is_paused()`, `steering_history` property). The `SearchJournal` gained `add_analysis()` and `summary_stats(best_iteration_override, goal_type)`. These additions are non-breaking — all new parameters default to `None` and CLI behaviour is unchanged.
+**Note**: `AgentLoopController` was extended beyond callbacks to also support interactive steering (steering queue, pause/resume via `threading.Event`, `inject_steering()`, `pause()`, `resume()`, `is_paused()`, `steering_history` property). The `SearchJournal` gained `add_analysis()`, `summary_stats(best_iteration_override, goal_type)`, `format_multi_objective_summary()`, and an `objective_registry` attribute (`ObjectiveRegistry` instance). `JournalEntry` gained a `tracked_metrics` field for per-iteration multi-objective metric values. The engine also gained `metric_extractor.py` (14 deterministic OPFLOW metric extractors) and `objective_parser.py` (LLM-based objective extraction from natural language). These additions are non-breaking — all new parameters default to `None` and CLI behaviour is unchanged.
 
 ### 2.3 Threading Model
 
@@ -171,6 +171,8 @@ The launcher works entirely with existing data structures from `llm_sim`:
 | `JournalEntry` | `llm_sim.engine.journal` | Individual iteration data for cards |
 | `OPFLOWResult` | `llm_sim.parsers.opflow_results` | Detailed simulation results for charts |
 | `SimulationResult` | `llm_sim.engine.executor` | Raw simulation output |
+| `ObjectiveEntry` | `llm_sim.engine.journal` | Single tracked objective definition |
+| `ObjectiveRegistry` | `llm_sim.engine.journal` | Registry of all tracked objectives with preference history |
 | `LLMConfig`, etc. | `llm_sim.config` | Config section dataclasses |
 
 No new data models are needed in the launcher. The `SessionManager` bridges between GUI inputs and these existing structures.
@@ -199,6 +201,7 @@ For real-time display, the callback writes concise update dicts to `st.session_s
     "mode": "accumulative",
     "prompt_tokens": 3200,
     "completion_tokens": 450,
+    "tracked_metrics": {"generation_cost": 5734.21, "voltage_deviation": 0.047},
 }
 ```
 
@@ -437,7 +440,7 @@ llm-sim/
 | `app.py` | Streamlit page layout, widget rendering, session state management, main UI flow |
 | `session_manager.py` | Creates `AppConfig`, instantiates `AgentLoopController` with callbacks, manages background thread, provides iteration data to the UI |
 | `config_builder.py` | Translates GUI widget values into the dict/override format that `load_config()` expects; scans `data/` directory for available `.m` files |
-| `charts.py` | Plotly figure builders: `convergence_chart()`, `voltage_profile_chart()`, `generator_dispatch_chart()`, `line_loading_chart()`, `voltage_range_trend_chart()`. Used both for live display and for PDF image export |
+| `charts.py` | Plotly figure builders: `convergence_chart()`, `voltage_profile_chart()`, `generator_dispatch_chart()`, `line_loading_chart()`, `voltage_range_trend_chart()`, `multi_objective_trend_chart()`. Used both for live display and for PDF image export |
 | `report_generator.py` | Builds a ReportLab PDF document from a completed `SearchSession`, embedding chart images and formatted tables |
 | `run.sh` | Shell script: `cd` to project root, then `streamlit run launcher/app.py` |
 | `example_goals.yaml` | YAML list of preset goal strings for the dropdown |
@@ -515,6 +518,16 @@ class SessionManager:
         """Return the list of steering directives injected so far."""
         ...
 
+    # --- Multi-objective tracking ---
+
+    def get_objective_registry(self) -> list[dict] | None:
+        """Get the objective registry data from the running or completed session."""
+        ...
+
+    def get_preference_history(self) -> list[dict] | None:
+        """Get the preference evolution history."""
+        ...
+
     # --- Analysis and goal classification ---
 
     def get_summary_analysis(self, session: SearchSession) -> str:
@@ -575,6 +588,16 @@ def line_loading_chart(base_result: OPFLOWResult,
                        best_result: OPFLOWResult,
                        top_n: int = 15) -> go.Figure:
     """Horizontal bar chart of most loaded lines."""
+    ...
+
+def multi_objective_trend_chart(journal: SearchJournal,
+                               height: int = 450) -> go.Figure | None:
+    """Line chart showing how each tracked objective evolves across iterations.
+
+    Each objective gets its own trace, color-coded with line style by priority
+    (solid=primary, dashed=secondary, dotted=watch). Constraint thresholds
+    are shown as horizontal reference lines. Returns None if fewer than 2
+    iterations have tracked_metrics data."""
     ...
 ```
 

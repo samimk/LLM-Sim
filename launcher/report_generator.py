@@ -28,12 +28,12 @@ from llm_sim.parsers.opflow_results import OPFLOWResult
 try:
     from charts import (
         convergence_chart, voltage_range_chart, voltage_profile_chart,
-        generator_dispatch_chart, line_loading_chart,
+        generator_dispatch_chart, line_loading_chart, multi_objective_trend_chart,
     )
 except ModuleNotFoundError:
     from launcher.charts import (
         convergence_chart, voltage_range_chart, voltage_profile_chart,
-        generator_dispatch_chart, line_loading_chart,
+        generator_dispatch_chart, line_loading_chart, multi_objective_trend_chart,
     )
 
 logger = logging.getLogger("launcher.report_generator")
@@ -269,6 +269,14 @@ class ReportGenerator:
         if steering_history:
             story.append(PageBreak())
             story.extend(self._build_steering_section(steering_history))
+
+        # Multi-objective section (only when applicable)
+        if (
+            hasattr(session.journal, "objective_registry")
+            and session.journal.objective_registry.is_multi_objective
+        ):
+            story.append(PageBreak())
+            story.extend(self._build_multi_objective_section(session, gc))
 
         doc.build(story)
         return buffer.getvalue()
@@ -793,5 +801,80 @@ class ReportGenerator:
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ]))
         elements.append(table)
+
+        return elements
+
+    # ── Multi-Objective Section ──────────────────────────────────────────
+
+    def _build_multi_objective_section(
+        self,
+        session: SearchSession,
+        goal_classification: Optional[dict] = None,
+    ) -> list:
+        s = self._styles
+        elements: list = []
+
+        elements.append(Paragraph("Multi-Objective Tracking", s["heading1"]))
+        elements.append(Spacer(1, 5 * mm))
+
+        registry = session.journal.objective_registry
+        obj_data = registry.to_dict_list()
+
+        if obj_data:
+            header = ["Objective", "Direction", "Priority", "Since Iter", "Source"]
+            rows: list = [header]
+            for obj in obj_data:
+                dir_str = obj["direction"]
+                if obj["direction"] == "constraint" and obj.get("threshold") is not None:
+                    dir_str = f"constraint (\u2264 {obj['threshold']})"
+                rows.append([
+                    Paragraph(obj["name"], s["body"]),
+                    dir_str,
+                    obj["priority"],
+                    str(obj.get("introduced_at", 0)),
+                    obj.get("source", "initial"),
+                ])
+
+            col_widths = [5 * cm, 3.5 * cm, 2.5 * cm, 2 * cm, 2 * cm]
+            obj_table = Table(rows, colWidths=col_widths)
+            obj_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3498db")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), self._font_bold),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("FONTNAME", (0, 1), (-1, -1), self._font),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
+                ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            elements.append(obj_table)
+            elements.append(Spacer(1, 0.5 * cm))
+
+        # Multi-objective trend chart
+        mo_chart = multi_objective_trend_chart(session.journal)
+        if mo_chart is not None:
+            img_bytes = _export_chart_image(mo_chart, width_px=700, height_px=450)
+            if img_bytes:
+                elements.append(Image(io.BytesIO(img_bytes), width=16 * cm, height=10 * cm))
+                elements.append(Spacer(1, 0.5 * cm))
+
+        # Tradeoff summary from goal classification
+        if goal_classification and goal_classification.get("tradeoff_summary"):
+            elements.append(Paragraph(
+                f"<b>Tradeoff Analysis:</b> {goal_classification['tradeoff_summary']}",
+                s["body"],
+            ))
+            elements.append(Spacer(1, 3 * mm))
+
+        if goal_classification and goal_classification.get("recommended_solutions"):
+            recs = goal_classification["recommended_solutions"]
+            if len(recs) > 1:
+                elements.append(Paragraph(
+                    f"<b>Recommended tradeoff solutions:</b> iterations {recs}",
+                    s["body"],
+                ))
 
         return elements
