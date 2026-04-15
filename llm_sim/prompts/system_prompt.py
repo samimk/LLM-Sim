@@ -25,6 +25,44 @@ def build_system_prompt(
     return _build_standard_prompt(command_schema, network_summary, application)
 
 
+_DC_OPF_SECTION = (
+    "=== DC OPF Characteristics ===\n\n"
+    "DCOPFLOW uses the DC power flow approximation:\n"
+    "- All bus voltages are fixed at 1.0 pu \u2014 voltage magnitude is NOT an optimization variable.\n"
+    "- Reactive power (Q) is ignored \u2014 only active power (P) is optimized.\n"
+    "- Line flows are computed using the B-matrix (susceptance) and phase angles only.\n"
+    "- The DC approximation is faster but less accurate than full AC OPF (OPFLOW).\n"
+    "- Voltage-related commands (set_gen_voltage, set_bus_vlimits, set_all_bus_vlimits) have NO "
+    "effect in DCOPFLOW. Do NOT use them.\n"
+    "- Focus on: generator active power dispatch (Pg), load scaling, branch status, and cost curves.\n"
+    "- DCOPFLOW is best used for fast screening, contingency ranking, and active power market analysis."
+)
+
+_AC_OPF_VOLTAGE_SECTION = (
+    "=== OPF Voltage Control ===\n\n"
+    "In OPFLOW (Optimal Power Flow), bus voltages are **optimization variables** \u2014 "
+    "the solver picks the voltage at each bus to minimise cost within the bounds set "
+    "by bus Vmin/Vmax. This means:\n"
+    '- set_gen_voltage sets only an initial guess; OPFLOW will ignore it and solve '
+    "for the optimal voltage.\n"
+    '- To enforce voltage limits across the entire network, use set_all_bus_vlimits '
+    '(command 11): {"action": "set_all_bus_vlimits", "Vmin": 0.95, "Vmax": 1.05}\n'
+    '- To enforce voltage limits on a specific bus only, use set_bus_vlimits '
+    '(command 10): {"action": "set_bus_vlimits", "bus": 10, "Vmin": 0.98, "Vmax": 1.02}\n'
+    "- Use scale_all_loads / set_gen_dispatch to shift the operating point when "
+    "limits alone are insufficient."
+)
+
+_DC_STRESS_TEST_SEVERITY = (
+    "Rank contingencies by severity: infeasibility > high line loading > cost increase "
+    "(no voltage violations in DC)."
+)
+
+_AC_STRESS_TEST_SEVERITY = (
+    "Rank contingencies by severity: infeasibility > voltage violations > high line loading > cost increase."
+)
+
+
 def _build_standard_prompt(
     command_schema: str,
     network_summary: str,
@@ -93,19 +131,7 @@ field in your JSON response (optional): \
 "propose_objectives": [{{"name": "<metric>", "direction": "minimize", "priority": "secondary"}}]
 - The operator can accept or reject proposed objectives via steering.
 
-=== OPF Voltage Control ===
-
-In OPFLOW (Optimal Power Flow), bus voltages are **optimization variables** — \
-the solver picks the voltage at each bus to minimise cost within the bounds set \
-by bus Vmin/Vmax. This means:
-- set_gen_voltage sets only an initial guess; OPFLOW will ignore it and solve \
-for the optimal voltage.
-- To enforce voltage limits across the entire network, use set_all_bus_vlimits \
-(command 11): {{"action": "set_all_bus_vlimits", "Vmin": 0.95, "Vmax": 1.05}}
-- To enforce voltage limits on a specific bus only, use set_bus_vlimits \
-(command 10): {{"action": "set_bus_vlimits", "bus": 10, "Vmin": 0.98, "Vmax": 1.02}}
-- Use scale_all_loads / set_gen_dispatch to shift the operating point when \
-limits alone are insufficient."""
+{_DC_OPF_SECTION if application == "dcopflow" else _AC_OPF_VOLTAGE_SECTION}"""
 
 
 def _build_stress_test_prompt(
@@ -173,22 +199,10 @@ You MUST respond with a single JSON object. Choose one of three actions:
 - After testing key N-1 contingencies, consider N-2 combinations of the most impactful outages.
 - For each contingency, assess: Did the system converge? How did cost change? \
 Were there voltage violations? Which lines became overloaded?
-- Rank contingencies by severity: infeasibility > voltage violations > high line loading > cost increase.
+- {_DC_STRESS_TEST_SEVERITY if application == "dcopflow" else _AC_STRESS_TEST_SEVERITY}
 - Use the "analyze" action to inspect line loadings and identify the next candidate if needed.
 - Declare "complete" once you've tested the most critical contingencies \
 and can characterize the system's vulnerability profile.
 - Do NOT test contingencies on lines with very low loading (<20%) — they are unlikely to be critical.
 
-=== OPF Voltage Control ===
-
-In OPFLOW (Optimal Power Flow), bus voltages are **optimization variables** — \
-the solver picks the voltage at each bus to minimise cost within the bounds set \
-by bus Vmin/Vmax. This means:
-- set_gen_voltage sets only an initial guess; OPFLOW will ignore it and solve \
-for the optimal voltage.
-- To enforce voltage limits across the entire network, use set_all_bus_vlimits \
-(command 11): {{"action": "set_all_bus_vlimits", "Vmin": 0.95, "Vmax": 1.05}}
-- To enforce voltage limits on a specific bus only, use set_bus_vlimits \
-(command 10): {{"action": "set_bus_vlimits", "bus": 10, "Vmin": 0.98, "Vmax": 1.02}}
-- Use scale_all_loads / set_gen_dispatch to shift the operating point when \
-limits alone are insufficient."""
+{_DC_OPF_SECTION if application == "dcopflow" else _AC_OPF_VOLTAGE_SECTION}"""

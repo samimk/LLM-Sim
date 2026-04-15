@@ -18,7 +18,7 @@ from llm_sim.config import AppConfig
 from llm_sim.engine.commands import parse_command
 from llm_sim.engine.executor import SimulationExecutor, SimulationResult
 from llm_sim.engine.journal import JournalEntry, ObjectiveEntry, SearchJournal
-from llm_sim.engine.metric_extractor import available_metrics, extract_all_metrics
+from llm_sim.engine.metric_extractor import available_metrics, available_metrics_for_app, extract_all_metrics
 from llm_sim.engine.modifier import apply_modifications
 from llm_sim.engine.objective_parser import (
     build_objective_extraction_prompt,
@@ -28,8 +28,8 @@ from llm_sim.engine.schema_description import command_schema_text
 from llm_sim.parsers import (
     parse_matpower,
     network_summary,
-    parse_simulation_result,
-    results_summary,
+    parse_simulation_result_for_app,
+    results_summary_for_app,
 )
 from llm_sim.parsers.matpower_model import MATNetwork
 from llm_sim.parsers.opflow_results import OPFLOWResult
@@ -197,14 +197,15 @@ class AgentLoopController:
             self._config.search.application,
             iteration=0,
         )
-        opflow = parse_simulation_result(
+        opflow = parse_simulation_result_for_app(
             sim_result,
+            application=self._config.search.application,
             bus_limits=_bus_limits_from_network(self._base_network),
         )
         self._latest_opflow = opflow
 
         if opflow is not None:
-            self._latest_results_text = results_summary(opflow)
+            self._latest_results_text = results_summary_for_app(opflow, self._config.search.application)
             self._base_opflow_result = opflow
             self._opflow_results_cache[0] = opflow
             self._journal.add_from_results(
@@ -487,8 +488,9 @@ class AgentLoopController:
         # Parse results
         if self._on_phase:
             self._on_phase(iteration, "parsing_results")
-        opflow = parse_simulation_result(
+        opflow = parse_simulation_result_for_app(
             sim_result,
+            application=self._config.search.application,
             bus_limits=_bus_limits_from_network(modified_net),
         )
         self._latest_opflow = opflow
@@ -496,7 +498,7 @@ class AgentLoopController:
             self._opflow_results_cache[iteration] = opflow
 
         if opflow is not None:
-            self._latest_results_text = results_summary(opflow)
+            self._latest_results_text = results_summary_for_app(opflow, self._config.search.application)
             self._current_network = modified_net
             self._print(
                 f"[Iter {iteration}] Simulation completed in "
@@ -609,9 +611,17 @@ class AgentLoopController:
         opf = self._latest_opflow
         q = query.lower()
 
+        _dcopflow = self._config.search.application == "dcopflow"
+
         # ── Voltage threshold queries ────────────────────────────────────
         m = re.search(r"voltage\s+below\s+([\d.]+)", q)
         if m:
+            if _dcopflow:
+                return (
+                    "Voltage magnitude analysis is not available in DCOPFLOW. "
+                    "In the DC approximation, all bus voltages are fixed at 1.0 pu. "
+                    "Use phase angle or line loading queries instead."
+                )
             threshold = float(m.group(1))
             buses = [b for b in opf.buses if b.Vm < threshold]
             if not buses:
@@ -623,6 +633,12 @@ class AgentLoopController:
 
         m = re.search(r"voltage\s+above\s+([\d.]+)", q)
         if m:
+            if _dcopflow:
+                return (
+                    "Voltage magnitude analysis is not available in DCOPFLOW. "
+                    "In the DC approximation, all bus voltages are fixed at 1.0 pu. "
+                    "Use phase angle or line loading queries instead."
+                )
             threshold = float(m.group(1))
             buses = [b for b in opf.buses if b.Vm > threshold]
             if not buses:
@@ -630,6 +646,25 @@ class AgentLoopController:
             lines = [f"Buses with Vm > {threshold} pu:"]
             for b in sorted(buses, key=lambda b: -b.Vm):
                 lines.append(f"  Bus {b.bus_id}: Vm={b.Vm:.4f} pu")
+            return "\n".join(lines)
+
+        # ── Phase angle queries (DCOPFLOW) ────────────────────────────────
+        if re.search(r"phase\s+angle|angle\s+profile|bus\s+angle", q):
+            if not opf.buses:
+                return "No bus data available."
+            sorted_by_angle = sorted(opf.buses, key=lambda b: b.Va)
+            lines = [f"Phase angle profile ({len(opf.buses)} buses):"]
+            lines.append(f"  Min: {sorted_by_angle[0].Va:.3f}° (bus {sorted_by_angle[0].bus_id})")
+            lines.append(f"  Max: {sorted_by_angle[-1].Va:.3f}° (bus {sorted_by_angle[-1].bus_id})")
+            ref = min(opf.buses, key=lambda b: abs(b.Va))
+            lines.append(f"  Ref: bus {ref.bus_id} ({ref.Va:.3f}°)")
+            lines.append("  Most extreme angles:")
+            for b in sorted_by_angle[:5]:
+                lines.append(f"    Bus {b.bus_id}: Va={b.Va:.3f}°")
+            if len(sorted_by_angle) > 5:
+                lines.append("    ...")
+                for b in sorted_by_angle[-3:]:
+                    lines.append(f"    Bus {b.bus_id}: Va={b.Va:.3f}°")
             return "\n".join(lines)
 
         # ── Line loading ─────────────────────────────────────────────────
@@ -800,7 +835,7 @@ class AgentLoopController:
         try:
             sys_prompt, user_prompt = build_objective_extraction_prompt(
                 text=goal,
-                available_metrics=available_metrics(),
+                available_metrics=available_metrics_for_app(self._config.search.application),
                 context="initial_goal",
             )
             response = self._backend.complete(sys_prompt, user_prompt)
@@ -844,7 +879,7 @@ class AgentLoopController:
         try:
             sys_prompt, user_prompt = build_objective_extraction_prompt(
                 text=directive,
-                available_metrics=available_metrics(),
+                available_metrics=available_metrics_for_app(self._config.search.application),
                 context="steering_directive",
             )
             response = self._backend.complete(sys_prompt, user_prompt)

@@ -57,6 +57,21 @@ def available_metrics() -> list[str]:
     return list(_EXTRACTORS.keys())
 
 
+# Metrics that are NOT meaningful for DCOPFLOW
+_DC_EXCLUDED_METRICS = {
+    "voltage_min", "voltage_max", "voltage_deviation", "voltage_range",
+    "total_reactive_gen_mvar",
+}
+
+
+def available_metrics_for_app(application: str) -> list[str]:
+    """Return metrics relevant for the given application."""
+    all_metrics = list(_EXTRACTORS.keys())
+    if application == "dcopflow":
+        return [m for m in all_metrics if m not in _DC_EXCLUDED_METRICS]
+    return all_metrics
+
+
 # ── Extractor functions ──────────────────────────────────────────────────────
 
 def _generation_cost(r: OPFLOWResult) -> float:
@@ -112,6 +127,13 @@ def _generation_reserve_mw(r: OPFLOWResult) -> float:
     """Total unused generation capacity (Pmax - Pg) for online generators."""
     return sum(g.Pmax - g.Pg for g in r.generators if g.status == 1 and g.Pg < g.Pmax)
 
+def _phase_angle_range(r: OPFLOWResult) -> float:
+    """Spread between max and min bus voltage angle (degrees)."""
+    if not r.buses:
+        return 0.0
+    angles = [b.Va for b in r.buses]
+    return max(angles) - min(angles)
+
 
 _EXTRACTORS: dict[str, callable] = {
     "generation_cost": _generation_cost,
@@ -128,4 +150,5 @@ _EXTRACTORS: dict[str, callable] = {
     "total_reactive_gen_mvar": _total_reactive_gen_mvar,
     "online_generator_count": _online_generator_count,
     "generation_reserve_mw": _generation_reserve_mw,
+    "phase_angle_range": _phase_angle_range,
 }

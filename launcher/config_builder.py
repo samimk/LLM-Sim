@@ -82,11 +82,11 @@ DEFAULT_MODELS: dict[str, str] = {
 # Available backends
 BACKENDS: list[str] = ["anthropic", "openai", "ollama", "ollama-cloud"]
 
-# Available applications (only opflow is fully supported for now)
-APPLICATIONS: list[str] = ["opflow"]
+# Available applications
+APPLICATIONS: list[str] = ["opflow", "dcopflow"]
 
 # Future applications (shown as disabled in the UI)
-FUTURE_APPLICATIONS: list[str] = ["scopflow", "tcopflow", "sopflow", "dcopflow", "pflow"]
+FUTURE_APPLICATIONS: list[str] = ["scopflow", "tcopflow", "sopflow", "pflow"]
 
 # Available search modes
 MODES: list[str] = ["accumulative", "fresh"]

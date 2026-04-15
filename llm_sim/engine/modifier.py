@@ -179,6 +179,23 @@ _SET_GEN_VOLTAGE_OPF_WARNING = (
     "the optimal voltage. Use set_bus_vlimits to enforce voltage constraints in OPF."
 )
 
+_DCOPFLOW_VOLTAGE_CMD_TYPES = (SetGenVoltage, SetBusVLimits, SetAllBusVLimits)
+
+def _dcopflow_voltage_skip_warning(cmd: ModCommand) -> str:
+    """Return the skip warning message for a voltage command in DCOPFLOW context."""
+    action_name = type(cmd).__name__
+    # Convert class name to action name for the message
+    _name_map = {
+        "SetGenVoltage": "set_gen_voltage",
+        "SetBusVLimits": "set_bus_vlimits",
+        "SetAllBusVLimits": "set_all_bus_vlimits",
+    }
+    action = _name_map.get(action_name, action_name)
+    return (
+        f"Command '{action}' skipped: has no effect in DCOPFLOW "
+        "(DC approximation ignores voltage magnitude)."
+    )
+
 
 def apply_modifications(
     net: MATNetwork,
@@ -204,6 +221,13 @@ def apply_modifications(
     report = ModificationReport()
 
     for cmd in commands:
+        # Skip voltage commands entirely for DCOPFLOW (they have no effect)
+        if application == "dcopflow" and isinstance(cmd, _DCOPFLOW_VOLTAGE_CMD_TYPES):
+            warning = _dcopflow_voltage_skip_warning(cmd)
+            report.warnings.append(warning)
+            logger.warning(warning)
+            continue
+
         result = validate_command(cmd, modified)
         report.warnings.extend(result.warnings)
 
