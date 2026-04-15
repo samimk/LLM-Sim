@@ -23,7 +23,7 @@ llm-sim ./data/case_ACTIVSg200.m "test" --dry-run
 LLM-Sim runs an iterative agent loop:
 
 1. **Parse** the MATPOWER base case network (.m file)
-2. **Run** a baseline simulation with ExaGO (e.g., OPFLOW)
+2. **Run** a baseline simulation with ExaGO (OPFLOW, DCOPFLOW, or other supported application)
 3. **Prompt** the LLM with the goal, network summary, and simulation results
 4. **LLM decides** an action:
    - **modify** — apply network changes (load scaling, generator dispatch, branch status, etc.) and run a new simulation
@@ -41,6 +41,28 @@ The search journal tracks every iteration, providing the LLM with a history of w
 - **Multi-objective** — "Minimize cost while keeping voltages above 0.95 pu and line loadings below 85%"
 - **Stress testing** — "Find the most critical N-1 contingencies by systematically testing line outages"
 - **Analysis** — "Report the top 5 most congested transmission lines"
+
+## Supported Applications
+
+| Application | Description | Status |
+|-------------|-------------|--------|
+| **OPFLOW** | AC Optimal Power Flow — full nonlinear OPF with voltage magnitudes, reactive power, and cost optimization | ✅ Fully supported |
+| **DCOPFLOW** | DC Optimal Power Flow — linearized approximation using phase angles and active power only. Faster than OPFLOW, useful for screening and contingency ranking | ✅ Fully supported |
+| SCOPFLOW | Security-Constrained OPF — optimizes dispatch to survive contingencies | Planned (Phase 3) |
+| TCOPFLOW | Multi-Period OPF — time-coupled optimization with load profiles | Planned (Phase 3) |
+| SOPFLOW | Stochastic OPF — optimization under uncertainty with scenario files | Planned (Phase 3) |
+| PFLOW | Power Flow — no optimization, LLM performs the search directly | Planned (Phase 4) |
+
+### DCOPFLOW vs OPFLOW
+
+DCOPFLOW uses the DC power flow approximation:
+- All bus voltages are fixed at 1.0 pu — voltage magnitude is not an optimization variable
+- Reactive power (Q) is ignored — only active power (P) is optimized
+- Simulations run significantly faster (typically 10-50x) than full AC OPF
+- Voltage-related commands (`set_gen_voltage`, `set_bus_vlimits`, `set_all_bus_vlimits`) are automatically skipped with a warning
+- Best suited for: fast screening, load scaling studies, contingency ranking, active power market analysis
+
+Select the application via CLI (`--app dcopflow`) or in the launcher GUI dropdown.
 
 ## Multi-Objective Tracking
 
@@ -182,6 +204,11 @@ llm-sim ./data/case_ACTIVSg200.m \
 # Resume a saved session
 llm-sim --resume workdir/saved_session_20260414_150000
 
+# DC Optimal Power Flow (fast screening)
+llm-sim ./data/case_ACTIVSg200.m \
+  "Find the maximum load scaling factor before infeasibility" \
+  --app dcopflow --max-iter 10 --mode fresh
+
 # Dry run (validate config without executing)
 python -m llm_sim ./data/case_ACTIVSg200.m "test goal" --dry-run
 ```
@@ -262,6 +289,9 @@ python -m pytest tests/test_multi_objective.py -v
 
 # Run session save/resume tests
 python -m pytest tests/test_session_io.py -v
+
+# Run DCOPFLOW-specific tests
+python -m pytest tests/test_dcopflow.py -v
 
 # Run end-to-end tests (requires opflow binary)
 python -m pytest tests/test_e2e.py -v -m "not slow"

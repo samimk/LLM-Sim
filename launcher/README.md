@@ -39,6 +39,7 @@ Do **not** run `streamlit run app.py` from inside `launcher/` — paths will not
 - Choose LLM backend (Anthropic, OpenAI, Ollama, Ollama-Cloud) with auto-populated model defaults
 - Adjust temperature, iteration mode (accumulative/fresh), and max iterations
 - Search mode selector: **Standard** (goal-directed search) or **Stress Test** (adversarial contingency exploration)
+- Application selector: choose between supported ExaGO applications (OPFLOW for full AC OPF, DCOPFLOW for fast DC approximation)
 - Preset goal library with common optimization tasks (minimize cost, fix voltage violations, stress testing, multi-objective, etc.)
 - Custom goal input via free-text area
 
@@ -54,6 +55,8 @@ Do **not** run `streamlit run app.py` from inside `launcher/` — paths will not
 ### Results & Summary View (Three Tabs)
 - **Overview**: Summary metrics, base-vs-best comparison table, convergence chart, voltage range chart
 - **Detailed Results**: Voltage profile comparison, generator dispatch chart, line loading chart, full iteration history table
+
+> **Note:** When using DCOPFLOW, voltage profile and voltage range charts show flat lines at 1.0 pu (expected — DC approximation fixes all voltages). Line loading and generator dispatch charts remain informative.
 - **Analysis & Report**: On-demand LLM-generated analytical summary, auto-generated search narrative, PDF report download
 
 ### Multi-Objective Tracking
