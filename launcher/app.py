@@ -639,7 +639,7 @@ def render_live_monitor():
         btn_col1, btn_col2, btn_col3 = st.columns(3)
 
         with btn_col1:
-            if st.button("Augment", use_container_width=True, disabled=not st.session_state.search_running):
+            if st.button("Augment", width='stretch', disabled=not st.session_state.search_running):
                 if directive_text.strip() and manager is not None:
                     manager.inject_steering(directive_text.strip(), mode="augment")
                     st.session_state.steering_history.append({
@@ -649,7 +649,7 @@ def render_live_monitor():
                     })
 
         with btn_col2:
-            if st.button("Replace", use_container_width=True, disabled=not st.session_state.search_running):
+            if st.button("Replace", width='stretch', disabled=not st.session_state.search_running):
                 if directive_text.strip() and manager is not None:
                     manager.inject_steering(directive_text.strip(), mode="replace")
                     st.session_state.steering_history.append({
@@ -660,12 +660,12 @@ def render_live_monitor():
 
         with btn_col3:
             if st.session_state.search_paused:
-                if st.button("▶️ Resume", use_container_width=True):
+                if st.button("▶️ Resume", width='stretch'):
                     if manager is not None:
                         manager.resume_search()
                         st.session_state.search_paused = False
             else:
-                if st.button("⏸️ Pause", use_container_width=True, disabled=not st.session_state.search_running):
+                if st.button("⏸️ Pause", width='stretch', disabled=not st.session_state.search_running):
                     if manager is not None:
                         manager.pause_search()
                         st.session_state.search_paused = True
@@ -909,7 +909,7 @@ def _render_overview_tab(session):
                 st.write(f"**Recommended tradeoff solutions:** iterations {recs}")
         mo_chart = multi_objective_trend_chart(session.journal)
         if mo_chart is not None:
-            st.plotly_chart(mo_chart, use_container_width=True)
+            st.plotly_chart(mo_chart, width='stretch')
         pref_history = session.journal.objective_registry.history
         if pref_history:
             with st.expander("Preference Evolution History"):
