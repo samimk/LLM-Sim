@@ -47,6 +47,7 @@ DEFAULTS: dict[str, Any] = {
         "default_mode": "accumulative",
         "base_case": None,
         "gic_file": None,
+        "ctgc_file": None,
         "application": "opflow",
         "search_mode": "standard",
     },
@@ -103,6 +104,7 @@ class SearchConfig:
     gic_file: Optional[Path]
     application: str
     search_mode: str = "standard"  # "standard" or "stress_test"
+    ctgc_file: Optional[Path] = None  # Contingency file for SCOPFLOW
 
 
 @dataclass(frozen=True)
@@ -230,7 +232,7 @@ def load_config(
 
     llm = _build_section(LLMConfig, merged["llm"], config_root, set())
 
-    search_path_fields = {"base_case", "gic_file"}
+    search_path_fields = {"base_case", "gic_file", "ctgc_file"}
     search = _build_section(SearchConfig, merged["search"], config_root, search_path_fields)
 
     output = _build_section(OutputConfig, merged["output"], config_root, {"workdir", "logs_dir"})
@@ -268,4 +270,14 @@ def _validate(cfg: AppConfig) -> None:
         logger.warning(
             "Unknown search_mode '%s' (expected one of %s)",
             cfg.search.search_mode, valid_search_modes,
+        )
+
+    if cfg.search.application == "scopflow" and cfg.search.ctgc_file is None:
+        logger.warning(
+            "SCOPFLOW requires a contingency file (-ctgcfile). "
+            "Set search.ctgc_file in config or use --ctgc on the CLI."
+        )
+    if cfg.search.ctgc_file is not None and not cfg.search.ctgc_file.exists():
+        logger.warning(
+            "Contingency file does not exist: %s", cfg.search.ctgc_file
         )

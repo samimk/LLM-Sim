@@ -22,9 +22,10 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from config_builder import (
-    scan_data_files, load_example_goals, build_config_overrides,
-    get_default_config_path, get_project_root, DEFAULT_MODELS, BACKENDS,
-    APPLICATIONS, FUTURE_APPLICATIONS, MODES, SEARCH_MODES,
+    scan_data_files, scan_contingency_files, load_example_goals,
+    build_config_overrides, get_default_config_path, get_project_root,
+    DEFAULT_MODELS, BACKENDS, APPLICATIONS, FUTURE_APPLICATIONS, MODES,
+    SEARCH_MODES,
 )
 from session_manager import SessionManager
 from charts import (
@@ -94,7 +95,8 @@ def get_network_info(file_path: str) -> dict:
 # ── Start Search Logic ───────────────────────────────────────────────────────
 
 def start_search(base_case_path, goal, backend, model, temperature,
-                 application, mode, max_iterations, search_mode="standard"):
+                 application, mode, max_iterations, search_mode="standard",
+                 ctgc_file=None):
     """Initialize and start a new search."""
     # Validate base case still exists
     if not Path(base_case_path).exists():
@@ -118,6 +120,7 @@ def start_search(base_case_path, goal, backend, model, temperature,
         default_mode=mode,
         max_iterations=max_iterations,
         search_mode=search_mode,
+        ctgc_file=ctgc_file,
     )
 
     if st.session_state.session_manager is None:
@@ -198,6 +201,26 @@ def render_sidebar() -> dict:
         if FUTURE_APPLICATIONS:
             st.caption(f"Coming soon: {', '.join(FUTURE_APPLICATIONS)}")
 
+        # Contingency file selector (SCOPFLOW only)
+        ctgc_file = None
+        if application == "scopflow":
+            cont_files = scan_contingency_files()
+            if cont_files:
+                cont_names = [f.name for f in cont_files]
+                cont_idx = st.selectbox(
+                    "Contingency file (.cont)",
+                    range(len(cont_files)),
+                    format_func=lambda i: cont_names[i],
+                    disabled=disabled,
+                )
+                ctgc_file = cont_files[cont_idx]
+                st.caption(f"`{ctgc_file}`")
+            else:
+                st.warning(
+                    "No .cont files found in data/ directory. "
+                    "SCOPFLOW requires a contingency file."
+                )
+
         mode = st.selectbox("Mode", MODES, disabled=disabled)
         search_mode = st.selectbox(
             "Search Mode", SEARCH_MODES, disabled=disabled,
@@ -257,6 +280,7 @@ def render_sidebar() -> dict:
                 mode=mode,
                 max_iterations=max_iterations,
                 search_mode=search_mode,
+                ctgc_file=ctgc_file,
             )
             st.rerun()
 
@@ -336,6 +360,7 @@ def render_sidebar() -> dict:
         "model": model,
         "temperature": temperature,
         "application": application,
+        "ctgc_file": ctgc_file,
         "mode": mode,
         "search_mode": search_mode,
         "max_iterations": max_iterations,

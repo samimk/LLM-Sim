@@ -110,6 +110,7 @@ class AgentLoopController:
         self._total_prompt_tokens = 0
         self._total_completion_tokens = 0
         self._opflow_results_cache: dict[int, OPFLOWResult] = {}
+        self._scopflow_num_contingencies: int = 0
 
     # ------------------------------------------------------------------
     # Output helper
@@ -159,6 +160,24 @@ class AgentLoopController:
         return list(self._steering_history)
 
     # ------------------------------------------------------------------
+    # Application-specific helpers
+    # ------------------------------------------------------------------
+
+    def _build_extra_args(self) -> list[str] | None:
+        """Build application-specific extra CLI arguments for the executor."""
+        args = []
+        app = self._config.search.application
+
+        if app == "scopflow":
+            if self._config.search.ctgc_file:
+                args.extend(["-ctgcfile", str(self._config.search.ctgc_file)])
+
+        if self._config.search.gic_file:
+            args.extend(["-gicfile", str(self._config.search.gic_file)])
+
+        return args if args else None
+
+    # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
 
@@ -196,7 +215,16 @@ class AgentLoopController:
             self._base_network,
             self._config.search.application,
             iteration=0,
+            extra_args=self._build_extra_args(),
         )
+
+        # Extract SCOPFLOW metadata (num_contingencies) once from base case
+        if self._config.search.application == "scopflow" and sim_result.success:
+            from llm_sim.parsers import parse_scopflow_metadata
+            meta = parse_scopflow_metadata(sim_result)
+            if meta:
+                self._scopflow_num_contingencies = meta.get("num_contingencies", 0)
+
         opflow = parse_simulation_result_for_app(
             sim_result,
             application=self._config.search.application,
@@ -205,7 +233,11 @@ class AgentLoopController:
         self._latest_opflow = opflow
 
         if opflow is not None:
-            self._latest_results_text = results_summary_for_app(opflow, self._config.search.application)
+            self._latest_results_text = results_summary_for_app(
+                opflow,
+                self._config.search.application,
+                num_contingencies=self._scopflow_num_contingencies,
+            )
             self._base_opflow_result = opflow
             self._opflow_results_cache[0] = opflow
             self._journal.add_from_results(
@@ -483,6 +515,7 @@ class AgentLoopController:
             modified_net,
             self._config.search.application,
             iteration=iteration,
+            extra_args=self._build_extra_args(),
         )
 
         # Parse results
@@ -498,7 +531,11 @@ class AgentLoopController:
             self._opflow_results_cache[iteration] = opflow
 
         if opflow is not None:
-            self._latest_results_text = results_summary_for_app(opflow, self._config.search.application)
+            self._latest_results_text = results_summary_for_app(
+                opflow,
+                self._config.search.application,
+                num_contingencies=self._scopflow_num_contingencies,
+            )
             self._current_network = modified_net
             self._print(
                 f"[Iter {iteration}] Simulation completed in "

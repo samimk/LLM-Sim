@@ -105,7 +105,7 @@ The PoC implements CLI subprocess mode first. Each ExaGO application is register
 |-------------|--------|--------|-------------|
 | OPFLOW | opflow | .m [.gic] | Bus voltages, gen dispatch, line flows, cost, convergence |
 | DCOPFLOW | dcopflow | .m | DC angles, active power flows, cost (same output format as OPFLOW; voltages fixed at 1.0 pu) |
-| SCOPFLOW | scopflow | .m + contingency | Base case + contingency results |
+| SCOPFLOW | scopflow | .m + .cont [-ctgcfile] | Base case preventive dispatch; per-contingency results via save (same OPFLOW table format for base case; contingency count in header) |
 | TCOPFLOW | tcopflow | .m + load profile | Multi-period dispatch |
 | SOPFLOW | sopflow | .m + scenarios | Stochastic results across scenarios |
 | PFLOW | pflow | .m | Power flow solution (no optimization) |
@@ -117,6 +117,8 @@ Produces two outputs:
 - **Compact summary:** 15–30 lines of text for LLM prompt inclusion. Contains: objective value, feasibility status, violation count/severity, voltage range, top-5 loaded lines, total generation vs. load.
 
 **Application-aware dispatch:** The parser layer includes dispatch functions (`parse_simulation_result_for_app`, `results_summary_for_app`) that route to the correct parser and summary generator based on the application name. DCOPFLOW reuses the OPFLOW parser (identical output format) but has its own summary generator (`dcopflow_results_summary`) that shows phase angle profiles instead of voltage magnitudes and omits reactive power data. Unknown applications fall back to the OPFLOW parser with a logged warning.
+
+SCOPFLOW has its own parser (`scopflow_parser.py`) because its output header differs from OPFLOW: it prints "Security-Constrained Optimal Power Flow" instead of "Optimal Power Flow", includes contingency metadata (number of contingencies, multi-period flag), and uses "Objective value (base)" instead of "Objective value". The SCOPFLOW parser extracts this metadata, then delegates bus/branch/generator table parsing to the OPFLOW parser (identical table format). The OPFLOW parser's objective value regex was updated to handle the optional "(base)" suffix, ensuring both formats are parsed by a single regex.
 
 **Violation checking** uses actual bus voltage limits (`Vmin`/`Vmax`) from the input MATPOWER network rather than hardcoded thresholds. This ensures that when the LLM tightens voltage limits via `set_bus_vlimits` or `set_all_bus_vlimits`, violations are reported accurately against the enforced limits. If bus limits are not available (backward compatibility), falls back to 0.9/1.1 p.u.
 
@@ -400,7 +402,7 @@ Key finding: the `set_all_bus_vlimits` command was essential for this test case 
 | Step | Task | Details | Status |
 |------|------|---------|--------|
 | 3.1 | DCOPFLOW support | DC approximation; fast screening proxy; reuses OPFLOW parser with DC-aware summary, prompt, and metric filtering | ✅ |
-| 3.2 | SCOPFLOW support | Contingency file management; per-contingency results | |
+| 3.2 | SCOPFLOW support | Contingency file via -ctgcfile; SCOPFLOW parser with metadata extraction; security-constrained summary; AC voltage + SCOPFLOW prompt sections; launcher contingency file selector | ✅ |
 | 3.3 | TCOPFLOW support | Time-series profiles; multi-period results | |
 | 3.4 | SOPFLOW support | Stochastic scenarios; uncertainty reasoning | |
 

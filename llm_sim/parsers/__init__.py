@@ -23,21 +23,34 @@ from llm_sim.parsers.opflow_results import (
 )
 from llm_sim.parsers.results_summary import results_summary
 from llm_sim.parsers.dcopflow_summary import dcopflow_results_summary
+from llm_sim.parsers.scopflow_parser import (
+    parse_scopflow_output,
+    parse_scopflow_simulation_result,
+)
+from llm_sim.parsers.scopflow_summary import scopflow_results_summary
 
 _logger = logging.getLogger("llm_sim.parsers")
 
-# Applications that use the same output format as OPFLOW
+# Applications that use the OPFLOW parser directly (identical output format)
 _OPFLOW_COMPATIBLE_APPS = {"opflow", "dcopflow"}
 
 
 def parse_simulation_result_for_app(sim_result, application: str, bus_limits=None):
     """Dispatch to the correct parser based on application name.
 
-    For 'opflow' and 'dcopflow', both use parse_simulation_result (same output format).
-    Returns parsed result object, or None if parsing fails.
+    For 'opflow' and 'dcopflow': use parse_simulation_result (same output format).
+    For 'scopflow': use parse_scopflow_simulation_result (same tables, different header).
+      Returns the OPFLOWResult portion of the tuple (metadata available separately).
+    Falls back to OPFLOW parser for unknown applications with a warning.
     """
     if application in _OPFLOW_COMPATIBLE_APPS:
         return parse_simulation_result(sim_result, bus_limits=bus_limits)
+    if application == "scopflow":
+        parsed = parse_scopflow_simulation_result(sim_result, bus_limits=bus_limits)
+        if parsed is None:
+            return None
+        opflow_result, _metadata = parsed
+        return opflow_result
     _logger.warning(
         "Unknown application '%s' for parse_simulation_result_for_app — "
         "falling back to OPFLOW parser.",
@@ -46,19 +59,37 @@ def parse_simulation_result_for_app(sim_result, application: str, bus_limits=Non
     return parse_simulation_result(sim_result, bus_limits=bus_limits)
 
 
-def results_summary_for_app(result: OPFLOWResult, application: str) -> str:
+def parse_scopflow_metadata(sim_result) -> dict | None:
+    """Extract SCOPFLOW-specific metadata (num_contingencies, multi_period).
+
+    Returns a dict or None if parsing fails or the simulation did not succeed.
+    """
+    parsed = parse_scopflow_simulation_result(sim_result)
+    if parsed is None:
+        return None
+    _opflow_result, metadata = parsed
+    return metadata
+
+
+def results_summary_for_app(result: OPFLOWResult, application: str, **kwargs) -> str:
     """Dispatch to the correct results summary generator based on application.
 
     For 'opflow': use existing results_summary().
-    For 'dcopflow': use dcopflow_results_summary() — a DC-aware summary
-    that skips voltage magnitude analysis (meaningless in DC) and focuses
-    on phase angles, active power dispatch, and line loading.
+    For 'dcopflow': use dcopflow_results_summary().
+    For 'scopflow': use scopflow_results_summary() with optional num_contingencies.
     For unknown applications: fall back to results_summary() with a warning.
+
+    kwargs:
+        num_contingencies (int): Number of contingencies enforced (SCOPFLOW only).
     """
     if application == "dcopflow":
         return dcopflow_results_summary(result)
     if application == "opflow":
         return results_summary(result)
+    if application == "scopflow":
+        return scopflow_results_summary(
+            result, num_contingencies=kwargs.get("num_contingencies", 0)
+        )
     _logger.warning(
         "Unknown application '%s' for results_summary_for_app — "
         "falling back to OPFLOW summary.",
@@ -83,7 +114,11 @@ __all__ = [
     "parse_opflow_output",
     "parse_simulation_result",
     "parse_simulation_result_for_app",
+    "parse_scopflow_output",
+    "parse_scopflow_simulation_result",
+    "parse_scopflow_metadata",
     "results_summary",
     "results_summary_for_app",
     "dcopflow_results_summary",
+    "scopflow_results_summary",
 ]

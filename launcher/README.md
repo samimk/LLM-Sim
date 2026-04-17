@@ -39,7 +39,8 @@ Do **not** run `streamlit run app.py` from inside `launcher/` — paths will not
 - Choose LLM backend (Anthropic, OpenAI, Ollama, Ollama-Cloud) with auto-populated model defaults
 - Adjust temperature, iteration mode (accumulative/fresh), and max iterations
 - Search mode selector: **Standard** (goal-directed search) or **Stress Test** (adversarial contingency exploration)
-- Application selector: choose between supported ExaGO applications (OPFLOW for full AC OPF, DCOPFLOW for fast DC approximation)
+- Application selector: choose between supported ExaGO applications (OPFLOW for full AC OPF, DCOPFLOW for fast DC approximation, SCOPFLOW for security-constrained OPF)
+- Contingency file selector: appears when SCOPFLOW is selected, showing available `.cont` files from the `data/` directory
 - Preset goal library with common optimization tasks (minimize cost, fix voltage violations, stress testing, multi-objective, etc.)
 - Custom goal input via free-text area
 

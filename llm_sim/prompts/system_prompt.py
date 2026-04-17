@@ -53,6 +53,34 @@ _AC_OPF_VOLTAGE_SECTION = (
     "limits alone are insufficient."
 )
 
+_SCOPFLOW_SECTION = (
+    "=== Security-Constrained OPF Characteristics ===\n\n"
+    "SCOPFLOW finds a preventive dispatch that satisfies the base case OPF "
+    "constraints AND survives all contingencies in the contingency file simultaneously.\n"
+    "- The results you see are the BASE CASE operating point \u2014 the dispatch that "
+    "the system must use to be secure against all listed outages.\n"
+    "- The cost is typically HIGHER than unconstrained OPFLOW because the dispatch "
+    "must leave enough margin to handle any single contingency.\n"
+    "- If SCOPFLOW is infeasible, it means NO dispatch exists that can survive all "
+    "contingencies at the current network configuration.\n"
+    "- Do NOT use set_branch_status to simulate contingencies \u2014 the contingency file "
+    "already defines them. Disabling a branch in the base case permanently removes it "
+    "from the topology (different from a contingency).\n"
+    "- Useful modifications: load scaling, generator dispatch/status, voltage limits, "
+    "cost curves \u2014 these change the operating point that SCOPFLOW must secure.\n"
+    "- The 'security premium' is the cost difference between SCOPFLOW and OPFLOW \u2014 "
+    "tracking this helps quantify the cost of reliability."
+)
+
+def _app_section(application: str) -> str:
+    """Return the application-specific prompt section for the given app."""
+    if application == "dcopflow":
+        return _DC_OPF_SECTION
+    if application == "scopflow":
+        return _AC_OPF_VOLTAGE_SECTION + "\n\n" + _SCOPFLOW_SECTION
+    return _AC_OPF_VOLTAGE_SECTION
+
+
 _DC_STRESS_TEST_SEVERITY = (
     "Rank contingencies by severity: infeasibility > high line loading > cost increase "
     "(no voltage violations in DC)."
@@ -131,7 +159,7 @@ field in your JSON response (optional): \
 "propose_objectives": [{{"name": "<metric>", "direction": "minimize", "priority": "secondary"}}]
 - The operator can accept or reject proposed objectives via steering.
 
-{_DC_OPF_SECTION if application == "dcopflow" else _AC_OPF_VOLTAGE_SECTION}"""
+{_app_section(application)}"""
 
 
 def _build_stress_test_prompt(
@@ -205,4 +233,4 @@ Were there voltage violations? Which lines became overloaded?
 and can characterize the system's vulnerability profile.
 - Do NOT test contingencies on lines with very low loading (<20%) — they are unlikely to be critical.
 
-{_DC_OPF_SECTION if application == "dcopflow" else _AC_OPF_VOLTAGE_SECTION}"""
+{_app_section(application)}"""

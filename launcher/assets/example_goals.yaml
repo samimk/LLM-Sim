@@ -25,3 +25,9 @@ goals:
 
   - label: "Stress test: find critical N-1 contingency"
     goal: "Systematically test N-1 contingencies (single line outages) to identify the most critical lines whose outage causes the largest cost increase, voltage violations, or system infeasibility. Start with the most heavily loaded lines. Report a ranked list of critical contingencies."
+
+  - label: "SCOPFLOW: Security premium analysis"
+    goal: "Run SCOPFLOW with all contingencies and report the base case cost. Compare this to the unconstrained OPFLOW cost to quantify the security premium — the additional cost of ensuring N-1 security."
+
+  - label: "SCOPFLOW: Maximum secure load"
+    goal: "Find the maximum uniform load scaling factor before the security-constrained dispatch becomes infeasible. Use binary search with fresh mode. This finds the N-1-secure loadability limit."

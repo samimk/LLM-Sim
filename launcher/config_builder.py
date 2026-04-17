@@ -56,6 +56,22 @@ def scan_config_files(configs_dir: Path | None = None) -> list[Path]:
     return sorted(files)
 
 
+def scan_contingency_files(data_dir: Path | None = None) -> list[Path]:
+    """Find all .cont contingency files in the data directory.
+
+    Args:
+        data_dir: Path to data directory. Defaults to <project_root>/data.
+
+    Returns:
+        Sorted list of .cont file paths (absolute).
+    """
+    if data_dir is None:
+        data_dir = get_project_root() / "data"
+    if not data_dir.is_dir():
+        return []
+    return sorted(data_dir.glob("*.cont"))
+
+
 def load_example_goals() -> list[dict[str, str]]:
     """Load preset search goals from assets/example_goals.yaml.
 
@@ -83,10 +99,10 @@ DEFAULT_MODELS: dict[str, str] = {
 BACKENDS: list[str] = ["anthropic", "openai", "ollama", "ollama-cloud"]
 
 # Available applications
-APPLICATIONS: list[str] = ["opflow", "dcopflow"]
+APPLICATIONS: list[str] = ["opflow", "dcopflow", "scopflow"]
 
 # Future applications (shown as disabled in the UI)
-FUTURE_APPLICATIONS: list[str] = ["scopflow", "tcopflow", "sopflow", "pflow"]
+FUTURE_APPLICATIONS: list[str] = ["tcopflow", "sopflow", "pflow"]
 
 # Available search modes
 MODES: list[str] = ["accumulative", "fresh"]
@@ -104,6 +120,7 @@ def build_config_overrides(
     default_mode: str,
     max_iterations: int,
     gic_file: str | Path | None = None,
+    ctgc_file: str | Path | None = None,
     ollama_host: str | None = None,
     ollama_cloud_host: str | None = None,
     openai_base_url: str | None = None,
@@ -146,6 +163,9 @@ def build_config_overrides(
 
     if gic_file:
         overrides["search.gic_file"] = str(gic_file)
+
+    if ctgc_file:
+        overrides["search.ctgc_file"] = str(ctgc_file)
 
     if ollama_host:
         overrides["llm.ollama_host"] = ollama_host

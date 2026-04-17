@@ -48,7 +48,7 @@ The search journal tracks every iteration, providing the LLM with a history of w
 |-------------|-------------|--------|
 | **OPFLOW** | AC Optimal Power Flow — full nonlinear OPF with voltage magnitudes, reactive power, and cost optimization | ✅ Fully supported |
 | **DCOPFLOW** | DC Optimal Power Flow — linearized approximation using phase angles and active power only. Faster than OPFLOW, useful for screening and contingency ranking | ✅ Fully supported |
-| SCOPFLOW | Security-Constrained OPF — optimizes dispatch to survive contingencies | Planned (Phase 3) |
+| **SCOPFLOW** | Security-Constrained OPF — finds a preventive dispatch that survives all contingencies in a `.cont` file. Requires a contingency file | ✅ Fully supported |
 | TCOPFLOW | Multi-Period OPF — time-coupled optimization with load profiles | Planned (Phase 3) |
 | SOPFLOW | Stochastic OPF — optimization under uncertainty with scenario files | Planned (Phase 3) |
 | PFLOW | Power Flow — no optimization, LLM performs the search directly | Planned (Phase 4) |
@@ -63,6 +63,17 @@ DCOPFLOW uses the DC power flow approximation:
 - Best suited for: fast screening, load scaling studies, contingency ranking, active power market analysis
 
 Select the application via CLI (`--app dcopflow`) or in the launcher GUI dropdown.
+
+### SCOPFLOW (Security-Constrained OPF)
+
+SCOPFLOW optimizes the base case dispatch so that the network remains feasible even if any contingency in the contingency file occurs:
+- Requires a `.cont` contingency file listing branch and generator outages
+- The cost is typically higher than unconstrained OPFLOW — this "security premium" is the price of reliability
+- Results show the **base case** operating point (the preventive dispatch), not individual contingency outcomes
+- All OPFLOW commands work with SCOPFLOW (voltage control, load scaling, generator dispatch, etc.)
+- Branch status commands (`set_branch_status`) permanently modify the topology — they do NOT simulate contingencies (the `.cont` file handles that)
+
+Select via CLI (`--app scopflow --ctgc data/case_ACTIVSg200.cont`) or in the launcher GUI (application dropdown + contingency file selector).
 
 ## Multi-Objective Tracking
 
@@ -209,6 +220,11 @@ llm-sim ./data/case_ACTIVSg200.m \
   "Find the maximum load scaling factor before infeasibility" \
   --app dcopflow --max-iter 10 --mode fresh
 
+# Security-Constrained OPF (requires contingency file)
+llm-sim ./data/case_ACTIVSg200.m \
+  "Find the minimum cost dispatch that survives all N-1 contingencies" \
+  --app scopflow --ctgc data/case_ACTIVSg200.cont --max-iter 10
+
 # Dry run (validate config without executing)
 python -m llm_sim ./data/case_ACTIVSg200.m "test goal" --dry-run
 ```
@@ -292,6 +308,9 @@ python -m pytest tests/test_session_io.py -v
 
 # Run DCOPFLOW-specific tests
 python -m pytest tests/test_dcopflow.py -v
+
+# Run SCOPFLOW-specific tests
+python -m pytest tests/test_scopflow.py -v
 
 # Run end-to-end tests (requires opflow binary)
 python -m pytest tests/test_e2e.py -v -m "not slow"

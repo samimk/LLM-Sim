@@ -26,7 +26,7 @@ _MODEL_RE = re.compile(r"^Model\s+(\S+)", re.MULTILINE)
 _SOLVER_RE = re.compile(r"^Solver\s+(\S+)", re.MULTILINE)
 _OBJECTIVE_TYPE_RE = re.compile(r"^Objective\s+(\S+)", re.MULTILINE)
 _CONVERGENCE_RE = re.compile(r"^Convergence status\s+(\S+)", re.MULTILINE)
-_OBJ_VALUE_RE = re.compile(r"^Objective value\s+([\d.eE+-]+)", re.MULTILINE)
+_OBJ_VALUE_RE = re.compile(r"^Objective value\s+(?:\(base\)\s+)?([\d.eE+-]+)", re.MULTILINE)
 
 _BUS_HEADER_RE = re.compile(r"^Bus\s+Pd\s+Pd", re.MULTILINE)
 _BRANCH_HEADER_RE = re.compile(r"^From\s+To\s+Status\s+Sft", re.MULTILINE)
