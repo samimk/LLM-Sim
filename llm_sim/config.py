@@ -27,7 +27,8 @@ DEFAULTS: dict[str, Any] = {
         "dcopflow_binary": None,
         "pflow_binary": None,
         "env_script": None,
-        "timeout": 120,
+        "timeout": 600,
+        "mpi_np": 1,
     },
     "data": {
         "data_dir": "./data",
@@ -77,6 +78,7 @@ class ExagoConfig:
     pflow_binary: Optional[Path]
     env_script: Optional[Path]
     timeout: int
+    mpi_np: int = 1
 
 
 @dataclass(frozen=True)

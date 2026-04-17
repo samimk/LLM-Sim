@@ -96,7 +96,7 @@ def get_network_info(file_path: str) -> dict:
 
 def start_search(base_case_path, goal, backend, model, temperature,
                  application, mode, max_iterations, search_mode="standard",
-                 ctgc_file=None):
+                 ctgc_file=None, mpi_np=1):
     """Initialize and start a new search."""
     # Validate base case still exists
     if not Path(base_case_path).exists():
@@ -121,6 +121,7 @@ def start_search(base_case_path, goal, backend, model, temperature,
         max_iterations=max_iterations,
         search_mode=search_mode,
         ctgc_file=ctgc_file,
+        mpi_np=mpi_np,
     )
 
     if st.session_state.session_manager is None:
@@ -229,6 +230,14 @@ def render_sidebar() -> dict:
         max_iterations = st.slider(
             "Max iterations", 1, 50, 20, disabled=disabled,
         )
+        mpi_np = st.number_input(
+            "MPI processes",
+            min_value=1,
+            max_value=64,
+            value=1,
+            disabled=disabled,
+            help="Number of MPI processes for ExaGO (default: 1). For SCOPFLOW with mpi_np > 1, uses EMPAR solver.",
+        )
 
         # ── Search Goal ──────────────────────────────────────────────────
         st.header("🎯 Search Goal")
@@ -281,6 +290,7 @@ def render_sidebar() -> dict:
                 max_iterations=max_iterations,
                 search_mode=search_mode,
                 ctgc_file=ctgc_file,
+                mpi_np=mpi_np,
             )
             st.rerun()
 
@@ -343,6 +353,7 @@ def render_sidebar() -> dict:
                     default_mode=mode,
                     max_iterations=max_iterations,
                     search_mode=search_mode,
+                    mpi_np=mpi_np,
                 )
                 sm = SessionManager()
                 st.session_state.session_manager = sm
@@ -364,6 +375,7 @@ def render_sidebar() -> dict:
         "mode": mode,
         "search_mode": search_mode,
         "max_iterations": max_iterations,
+        "mpi_np": mpi_np,
         "goal": goal,
     }
 

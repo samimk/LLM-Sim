@@ -330,3 +330,104 @@ class TestSCOPFLOWConfig:
             application="opflow",
         )
         assert cfg.ctgc_file is None
+
+
+# ---------------------------------------------------------------------------
+# Synthetic SCOPFLOW EMPAR output (no Ipopt EXIT message)
+# ---------------------------------------------------------------------------
+
+SAMPLE_SCOPFLOW_EMPAR_CONVERGED = """\
+=============================================================
+\tSecurity-Constrained Optimal Power Flow
+=============================================================
+Number of contingencies         5
+Multi-period contingencies?     NO
+Solver                          EMPAR
+Initialization                  ACPF
+Load loss allowed               NO
+Power imbalance allowed         NO
+Ignore line flow constraints    NO
+
+Convergence status              CONVERGED
+Objective value (base)          28500.00
+
+------------------------------------------------------------------------------------------------------
+Bus        Pd      Pdloss Qd      Qdloss Vm      Va      mult_Pmis      mult_Qmis      Pslack         Qslack
+------------------------------------------------------------------------------------------------------
+1         0.00    0.00    0.00    0.00   1.050   0.000         0.00         0.00         0.00         0.00
+2        80.00    0.00   20.00    0.00   1.020  -4.100         0.00         0.00         0.00         0.00
+3        60.00    0.00   15.00    0.00   1.015  -6.800         0.00         0.00         0.00         0.00
+
+------------------------------------------------------------------------------------------------------
+From       To       Status     Sft      Stf     Slim     mult_Sf  mult_St
+----------------------------------------------------------------------------------------
+1          2          1       55.00    55.00   100.00     0.00     0.00
+1          3          1       75.43    75.43   150.00     0.00     0.00
+
+----------------------------------------------------------------------------------------
+Gen      Status     Fuel     Pg       Qg       Pmin     Pmax     Qmin     Qmax
+----------------------------------------------------------------------------------------
+1          1        COAL     95.00    18.50    10.00   150.00   -50.00    50.00
+2          1        GAS      42.43    12.30     5.00    80.00   -30.00    30.00
+"""
+
+SAMPLE_SCOPFLOW_EMPAR_DID_NOT_CONVERGE = """\
+=============================================================
+\tSecurity-Constrained Optimal Power Flow
+=============================================================
+Number of contingencies         5
+Multi-period contingencies?     NO
+Solver                          EMPAR
+Initialization                  ACPF
+Load loss allowed               NO
+Power imbalance allowed         NO
+Ignore line flow constraints    NO
+
+Convergence status              DID NOT CONVERGE
+Objective value (base)          28500.00
+
+------------------------------------------------------------------------------------------------------
+Bus        Pd      Pdloss Qd      Qdloss Vm      Va      mult_Pmis      mult_Qmis      Pslack         Qslack
+------------------------------------------------------------------------------------------------------
+1         0.00    0.00    0.00    0.00   1.050   0.000         0.00         0.00         0.00         0.00
+2        80.00    0.00   20.00    0.00   1.020  -4.100         0.00         0.00         0.00         0.00
+3        60.00    0.00   15.00    0.00   1.015  -6.800         0.00         0.00         0.00         0.00
+
+------------------------------------------------------------------------------------------------------
+From       To       Status     Sft      Stf     Slim     mult_Sf  mult_St
+----------------------------------------------------------------------------------------
+1          2          1       55.00    55.00   100.00     0.00     0.00
+1          3          1       75.43    75.43   150.00     0.00     0.00
+
+----------------------------------------------------------------------------------------
+Gen      Status     Fuel     Pg       Qg       Pmin     Pmax     Qmin     Qmax
+----------------------------------------------------------------------------------------
+1          1        COAL     95.00    18.50    10.00   150.00   -50.00    50.00
+2          1        GAS      42.43    12.30     5.00    80.00   -30.00    30.00
+"""
+
+
+class TestSCOPFLOWEMPARParsing:
+    """EMPAR solver does not emit the Ipopt EXIT line; converged must still
+    be set correctly from the SCOPFLOW Convergence status field."""
+
+    def test_empar_no_exit_message(self):
+        """CONVERGED in header should yield converged=True even without EXIT line."""
+        assert "EXIT: Optimal Solution Found." not in SAMPLE_SCOPFLOW_EMPAR_CONVERGED
+        result, _ = parse_scopflow_output(SAMPLE_SCOPFLOW_EMPAR_CONVERGED)
+        assert result.converged is True
+        assert result.convergence_status == "CONVERGED"
+
+    def test_empar_did_not_converge(self):
+        """'DID NOT CONVERGE' in header should yield converged=False."""
+        assert "EXIT:" not in SAMPLE_SCOPFLOW_EMPAR_DID_NOT_CONVERGE
+        result, _ = parse_scopflow_output(SAMPLE_SCOPFLOW_EMPAR_DID_NOT_CONVERGE)
+        assert result.converged is False
+        assert result.convergence_status in ("DID", "DID NOT CONVERGE")
+
+    def test_original_scopflow_with_exit_still_works(self):
+        """Regression: original SCOPFLOW output (with EXIT line) still converged=True."""
+        assert "EXIT: Optimal Solution Found." in SAMPLE_SCOPFLOW_OUTPUT
+        result, _ = parse_scopflow_output(SAMPLE_SCOPFLOW_OUTPUT)
+        assert result.converged is True
+        assert result.convergence_status == "CONVERGED"

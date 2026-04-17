@@ -83,6 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to .cont contingency file (required for SCOPFLOW)",
     )
     parser.add_argument(
+        "--np",
+        dest="mpi_np",
+        type=int,
+        help="Number of MPI processes for ExaGO (default: 1)",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         default=None,
@@ -134,6 +140,8 @@ def _cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
         overrides["search.gic_file"] = args.gic_file
     if args.ctgc_file is not None:
         overrides["search.ctgc_file"] = args.ctgc_file
+    if args.mpi_np is not None:
+        overrides["exago.mpi_np"] = args.mpi_np
     if args.search_mode is not None:
         overrides["search.search_mode"] = args.search_mode
     if args.verbose is not None:

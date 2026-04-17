@@ -55,6 +55,14 @@ def parse_scopflow_output(
     # passes because "Security-Constrained Optimal Power Flow" contains it.
     result = parse_opflow_output(stdout, bus_limits=bus_limits)
 
+    # SCOPFLOW with EMPAR solver does not produce an Ipopt EXIT message,
+    # so the OPFLOW parser may set converged=False even when SCOPFLOW
+    # reports CONVERGED in its header. Override based on convergence_status.
+    if result.convergence_status == "CONVERGED":
+        result.converged = True
+    elif result.convergence_status in ("DID", "DID NOT CONVERGE", "DIVERGED"):
+        result.converged = False
+
     return result, metadata
 
 

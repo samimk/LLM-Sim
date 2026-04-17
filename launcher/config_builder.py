@@ -126,6 +126,7 @@ def build_config_overrides(
     openai_base_url: str | None = None,
     verbose: bool = False,
     search_mode: str = "standard",
+    mpi_np: int = 1,
 ) -> dict[str, Any]:
     """Build a CLI-style overrides dict from GUI widget values.
 
@@ -159,6 +160,7 @@ def build_config_overrides(
         "llm.model": model,
         "llm.temperature": temperature,
         "output.verbose": verbose,
+        "exago.mpi_np": mpi_np,
     }
 
     if gic_file:

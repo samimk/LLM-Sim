@@ -171,6 +171,9 @@ class AgentLoopController:
         if app == "scopflow":
             if self._config.search.ctgc_file:
                 args.extend(["-ctgcfile", str(self._config.search.ctgc_file)])
+                args.extend(["-scopflow_Nc", "-1"])
+            if self._config.exago.mpi_np > 1:
+                args.extend(["-scopflow_solver", "EMPAR"])
 
         if self._config.search.gic_file:
             args.extend(["-gicfile", str(self._config.search.gic_file)])

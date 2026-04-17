@@ -14,7 +14,7 @@ exago:
   # Copy configs/env_setup.sh.template to configs/env_setup.sh and adjust paths
   env_script: "./configs/env_setup.sh"
   # Default timeout for simulation execution (seconds)
-  timeout: 120
+  timeout: 360
 
 # Data settings
 data:
