@@ -50,7 +50,15 @@ _AC_OPF_VOLTAGE_SECTION = (
     '- To enforce voltage limits on a specific bus only, use set_bus_vlimits '
     '(command 10): {"action": "set_bus_vlimits", "bus": 10, "Vmin": 0.98, "Vmax": 1.02}\n'
     "- Use scale_all_loads / set_gen_dispatch to shift the operating point when "
-    "limits alone are insufficient."
+    "limits alone are insufficient.\n\n"
+    "=== Feasibility Classification ===\n\n"
+    "Each iteration is classified as one of:\n"
+    "- feasible: Simulation converged with no constraint violations. "
+    "The solution is physically valid.\n"
+    "- infeasible: Either the solver did not converge, or the solution has "
+    "generation < load (negative losses). This is not a physically valid dispatch.\n"
+    "- marginal: Solver did not fully converge but no violations were detected "
+    "in the solution data. Use with caution \u2014 may serve as a boundary marker."
 )
 
 _SCOPFLOW_SECTION = (
@@ -69,7 +77,29 @@ _SCOPFLOW_SECTION = (
     "- Useful modifications: load scaling, generator dispatch/status, voltage limits, "
     "cost curves \u2014 these change the operating point that SCOPFLOW must secure.\n"
     "- The 'security premium' is the cost difference between SCOPFLOW and OPFLOW \u2014 "
-    "tracking this helps quantify the cost of reliability."
+    "tracking this helps quantify the cost of reliability.\n\n"
+    "=== SCOPFLOW Solver and Feasibility ===\n\n"
+    "Two SCOPFLOW solvers are available:\n"
+    "- IPOPT (single core): Solves the full SCOPFLOW problem monolithically. "
+    "Reports DID NOT CONVERGE when no N-1-secure dispatch exists. Results are RELIABLE.\n"
+    "- EMPAR (multi-core): Solves each contingency independently. ALWAYS reports CONVERGED "
+    "regardless of whether individual contingencies actually converged. EMPAR does NOT "
+    "properly enforce N-1 security \u2014 it only checks base-case feasibility. "
+    "Results with EMPAR reflect base-case loadability only, NOT N-1-secure loadability. "
+    "The loadability limit will appear significantly higher with EMPAR than IPOPT.\n\n"
+    "When using EMPAR, results marked 'feasible' with CONVERGED status may still be "
+    "N-1-INSECURE. For accurate N-1 security analysis, use IPOPT.\n\n"
+    "=== Feasibility Classification ===\n\n"
+    "Each iteration is classified as one of:\n"
+    "- feasible: Simulation converged with no constraint violations. "
+    "The solution is physically valid and can be used for decision-making.\n"
+    "- infeasible: Either the solver did not converge, or the solution has "
+    "generation < load (negative losses) meaning the dispatch cannot serve the demand. "
+    "This iteration should be treated as a boundary marker, not a valid solution.\n"
+    "- marginal: The solver did not fully converge (e.g., maximum iterations exceeded) "
+    "but the solution data shows no constraint violations. The solution MAY be usable "
+    "but should be treated with caution. It can serve as a boundary marker in "
+    "feasibility searches."
 )
 
 def _app_section(application: str) -> str:

@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Optional
 
-from llm_sim.parsers.opflow_parser import parse_opflow_output
+from llm_sim.parsers.opflow_parser import parse_opflow_output, _is_marginal_exit
 from llm_sim.parsers.opflow_results import OPFLOWResult
 
 logger = logging.getLogger("llm_sim.parsers.scopflow")
@@ -62,6 +62,35 @@ def parse_scopflow_output(
         result.converged = True
     elif result.convergence_status in ("DID", "DID NOT CONVERGE", "DIVERGED"):
         result.converged = False
+
+    # Recompute feasibility_detail for SCOPFLOW-specific logic.
+    # EMPAR (solver=EMPAR) always reports CONVERGED but does not check
+    # per-contingency convergence, so we rely on power balance and
+    # structural violations instead.
+    has_power_balance_violation = (
+        result.losses_mw < 0 and result.total_load_mw > 0
+    )
+    is_empar = result.solver.strip().upper() == "EMPAR"
+
+    if result.converged and not has_power_balance_violation:
+        # For EMPAR, "CONVERGED" doesn't guarantee per-contingency convergence
+        # but with no structural violations and positive losses, we accept it
+        result.feasibility_detail = "feasible"
+    elif has_power_balance_violation:
+        result.feasibility_detail = "infeasible"
+        result.converged = False
+    elif result.convergence_status in ("DID", "DID NOT CONVERGE", "DIVERGED"):
+        # IPOPT didn't converge — check if it's marginal or infeasible
+        if result.ipopt_exit_status and _is_marginal_exit(result.ipopt_exit_status):
+            result.feasibility_detail = "marginal"
+        else:
+            result.feasibility_detail = "infeasible"
+    elif is_empar and result.converged:
+        # EMPAR CONVERGED with no issues — treat as feasible
+        # (contingency-level convergence isn't verified by EMPAR)
+        result.feasibility_detail = "feasible"
+    else:
+        result.feasibility_detail = "infeasible"
 
     return result, metadata
 

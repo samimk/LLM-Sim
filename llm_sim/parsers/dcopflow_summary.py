@@ -18,6 +18,8 @@ def dcopflow_results_summary(result: OPFLOWResult) -> str:
     lines: list[str] = []
     lines.append("=== DCOPFLOW Results (DC Approximation) ===")
     lines.append(f"Status: {result.convergence_status}")
+    if result.feasibility_detail:
+        lines.append(f"Feasibility: {result.feasibility_detail}")
     lines.append(f"Objective value (cost): ${result.objective_value:,.2f}")
     lines.append(f"Solver: {result.solver} ({result.num_iterations} iterations, {result.solve_time:.2f}s)")
     lines.append("Note: DC approximation — voltages fixed at 1.0 pu, no reactive power.")
@@ -38,12 +40,15 @@ def dcopflow_results_summary(result: OPFLOWResult) -> str:
         lines.append("")
 
     # Generation vs load (active power only — no reactive in DC)
-    losses = result.total_gen_mw - result.total_load_mw
-    lines.append(
+    losses = result.losses_mw
+    gen_load_line = (
         f"Generation: {result.total_gen_mw:.2f} MW / "
         f"Load: {result.total_load_mw:.2f} MW / "
         f"Losses: {losses:.2f} MW"
     )
+    if losses < 0 and result.total_load_mw > 0:
+        gen_load_line += "  ** UNPHYSICAL — negative losses **"
+    lines.append(gen_load_line)
     lines.append("")
 
     # Top 5 most loaded lines

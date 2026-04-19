@@ -133,6 +133,109 @@ class TestAddFromResults:
         assert entry.voltage_min == 0.0
         assert entry.voltage_max == 0.0
 
+    def test_power_balance_violation_marks_infeasible(self):
+        """Converged result with negative losses (gen < load) should be infeasible."""
+        j = SearchJournal()
+        opf = _make_opflow_result(
+            converged=True,
+            total_gen_mw=500.0,
+            total_load_mw=1000.0,
+            losses_mw=-500.0,
+        )
+        entry = j.add_from_results(
+            iteration=1,
+            description="Unphysical solution",
+            commands=[],
+            opflow_result=opf,
+            sim_elapsed=0.1,
+            llm_reasoning="Test",
+            mode="fresh",
+        )
+        assert entry.feasible is False
+
+    def test_positive_losses_still_feasible(self):
+        """Converged result with positive losses should remain feasible."""
+        j = SearchJournal()
+        opf = _make_opflow_result(
+            converged=True,
+            total_gen_mw=520.0,
+            total_load_mw=490.0,
+            losses_mw=30.0,
+        )
+        entry = j.add_from_results(
+            iteration=1,
+            description="Good solution",
+            commands=[],
+            opflow_result=opf,
+            sim_elapsed=0.1,
+            llm_reasoning="Test",
+            mode="fresh",
+        )
+        assert entry.feasible is True
+
+    def test_zero_load_no_power_balance_violation(self):
+        """Zero load should not cause a power balance violation flag."""
+        j = SearchJournal()
+        opf = _make_opflow_result(
+            converged=True,
+            total_gen_mw=0.0,
+            total_load_mw=0.0,
+            losses_mw=0.0,
+        )
+        entry = j.add_from_results(
+            iteration=1,
+            description="Zero load",
+            commands=[],
+            opflow_result=opf,
+            sim_elapsed=0.1,
+            llm_reasoning="Test",
+            mode="fresh",
+        )
+        assert entry.feasible is True
+
+    def test_marginal_feasibility_detail(self):
+        """DID NOT CONVERGE with marginal exit should be feasible=False, detail=marginal."""
+        j = SearchJournal()
+        opf = _make_opflow_result(
+            converged=False,
+            convergence_status="DID NOT CONVERGE",
+            feasibility_detail="marginal",
+        )
+        entry = j.add_from_results(
+            iteration=1,
+            description="Marginal convergence",
+            commands=[],
+            opflow_result=opf,
+            sim_elapsed=0.1,
+            llm_reasoning="Test",
+            mode="fresh",
+        )
+        assert entry.feasible is False
+        assert entry.feasibility_detail == "marginal"
+
+    def test_infeasible_power_balance(self):
+        """Power balance violation should make feasible=False, detail=infeasible."""
+        j = SearchJournal()
+        opf = _make_opflow_result(
+            converged=False,
+            convergence_status="CONVERGED",
+            total_gen_mw=500.0,
+            total_load_mw=1000.0,
+            losses_mw=-500.0,
+            feasibility_detail="infeasible",
+        )
+        entry = j.add_from_results(
+            iteration=1,
+            description="Power balance violation",
+            commands=[],
+            opflow_result=opf,
+            sim_elapsed=0.1,
+            llm_reasoning="Test",
+            mode="fresh",
+        )
+        assert entry.feasible is False
+        assert entry.feasibility_detail == "infeasible"
+
 
 # ===========================================================================
 # format_for_prompt

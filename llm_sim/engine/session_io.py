@@ -153,6 +153,8 @@ def load_session(save_dir: Path) -> dict[str, Any]:
             timestamp=entry_data.get("timestamp", ""),
             steering_directive=entry_data.get("steering_directive"),
             tracked_metrics=entry_data.get("tracked_metrics"),
+            feasibility_detail=entry_data.get("feasibility_detail", ""),
+            solver=entry_data.get("solver", ""),
         )
         journal_entries.append(entry)
 

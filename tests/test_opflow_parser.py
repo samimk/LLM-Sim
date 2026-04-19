@@ -257,3 +257,172 @@ class TestBusLimitsViolations:
         result = parse_simulation_result(FakeResult(), bus_limits={1: (0.95, 1.05)})
         assert result is not None
         assert result.num_violations == 1
+
+
+# ===========================================================================
+# Power balance violation checking
+# ===========================================================================
+
+def _minimal_opflow_stdout_with_gen(gen_mw: float, load_mw: float) -> str:
+    """Build OPFLOW stdout with one bus (load) and one generator."""
+    return (
+        "Optimal Power Flow\n"
+        "EXIT: Optimal Solution Found.\n"
+        "Model                             POWER_BALANCE_POLAR\n"
+        "Solver                            IPOPT\n"
+        "Objective                         MIN_GEN_COST\n"
+        "Convergence status                CONVERGED\n"
+        "Objective value                   1000.00\n"
+        "Bus        Pd      Pdloss Qd      Qdloss Vm      Va      mult_Pmis      mult_Qmis      Pslack         Qslack\n"
+        "------------------------------------------------------------------------------------------------------\n"
+        f"  1        {load_mw:.2f}    0.00    0.00    0.00   1.050   0.000         0.00         0.00         0.00         0.00\n"
+        "------------------------------------------------------------------------------------------------------\n"
+        "From       To       Status     Sft      Stf     Slim     mult_Sf  mult_St\n"
+        "----------------------------------------------------------------------------------------\n"
+        "1          2          1       55.00    55.00   100.00     0.00     0.00\n"
+        "----------------------------------------------------------------------------------------\n"
+        "Gen      Status     Fuel     Pg       Qg       Pmin     Pmax     Qmin     Qmax\n"
+        "----------------------------------------------------------------------------------------\n"
+        f"1          1        COAL     {gen_mw:.2f}    18.50    10.00   150.00   -50.00    50.00\n"
+        "----------------------------------------------------------------------------------------\n"
+    )
+
+
+class TestPowerBalanceViolations:
+    """Verify that negative losses (gen < load) are flagged as violations."""
+
+    def test_positive_losses_no_violation(self):
+        """Gen > Load should produce 0 power balance violations."""
+        result = parse_opflow_output(
+            _minimal_opflow_stdout_with_gen(gen_mw=150.0, load_mw=100.0),
+        )
+        assert result.losses_mw > 0
+        assert result.power_balance_mismatch_pct > 0
+        pb_violations = [
+            v for v in result.violation_details if "Power balance" in v
+        ]
+        assert len(pb_violations) == 0
+
+    def test_negative_losses_flagged(self):
+        """Gen < Load should produce a power balance violation."""
+        result = parse_opflow_output(
+            _minimal_opflow_stdout_with_gen(gen_mw=75.0, load_mw=100.0),
+        )
+        assert result.losses_mw < 0
+        assert result.power_balance_mismatch_pct < 0
+        pb_violations = [
+            v for v in result.violation_details if "Power balance" in v
+        ]
+        assert len(pb_violations) == 1
+        assert "generation" in pb_violations[0]
+
+    def test_zero_load_no_violation(self):
+        """Zero load should not trigger power balance violation."""
+        result = parse_opflow_output(
+            _minimal_opflow_stdout_with_gen(gen_mw=0.0, load_mw=0.0),
+        )
+        assert result.losses_mw == 0.0
+        pb_violations = [
+            v for v in result.violation_details if "Power balance" in v
+        ]
+        assert len(pb_violations) == 0
+
+    def test_violation_count_includes_power_balance(self):
+        """num_violations should include power balance violations."""
+        result = parse_opflow_output(
+            _minimal_opflow_stdout_with_gen(gen_mw=50.0, load_mw=100.0),
+        )
+        pb_violations = [
+            v for v in result.violation_details if "Power balance" in v
+        ]
+        assert len(pb_violations) == 1
+        assert result.num_violations >= 1
+
+
+# ===========================================================================
+# IPOPT exit status and feasibility_detail
+# ===========================================================================
+
+def _minimal_opflow_stdout_with_convergence(convergence_status: str, exit_msg: str = "") -> str:
+    """Build minimal OPFLOW stdout with specific convergence and EXIT messages."""
+    bus_row = "  1    0.00    0.00    0.00    0.00    1.050    0.00    0.00    0.00    0.00    0.00"
+    exit_section = f"EXIT: {exit_msg}\n" if exit_msg else ""
+    return (
+        f"{exit_section}"
+        "Optimal Power Flow\n"
+        f"Convergence status                {convergence_status}\n"
+        "Objective value                   1000.00\n"
+        "Model                             POWER_BALANCE_POLAR\n"
+        "Solver                            IPOPT\n"
+        "Bus      Pd      Pd      Qd      Qd      Vm      Va      mult_Pmis  mult_Qmis  Pslack  Qslack\n"
+        "------------------------------------------------------------\n"
+        f"{bus_row}\n"
+        "------------------------------------------------------------\n"
+    )
+
+
+class TestIPOPTExitStatus:
+    """Verify IPOPT exit status parsing and feasibility_detail classification."""
+
+    def test_optimal_solution_is_feasible(self):
+        result = parse_opflow_output(
+            _minimal_opflow_stdout_with_convergence("CONVERGED", "Optimal Solution Found.")
+        )
+        assert result.converged is True
+        assert result.ipopt_exit_status == "Optimal Solution Found."
+        assert result.feasibility_detail == "feasible"
+
+    def test_max_iterations_is_marginal(self):
+        result = parse_opflow_output(
+            _minimal_opflow_stdout_with_convergence(
+                "DID NOT CONVERGE", "Maximum Number of Iterations Exceeded."
+            )
+        )
+        assert result.converged is False
+        assert result.ipopt_exit_status == "Maximum Number of Iterations Exceeded."
+        assert result.feasibility_detail == "marginal"
+
+    def test_infeasible_problem_detected(self):
+        result = parse_opflow_output(
+            _minimal_opflow_stdout_with_convergence(
+                "DID NOT CONVERGE", "Infeasible Problem Detected."
+            )
+        )
+        assert result.converged is False
+        assert result.ipopt_exit_status == "Infeasible Problem Detected."
+        assert result.feasibility_detail == "infeasible"
+
+    def test_search_direction_too_small_is_marginal(self):
+        result = parse_opflow_output(
+            _minimal_opflow_stdout_with_convergence(
+                "DID NOT CONVERGE", "Search Direction Becomes Too Small."
+            )
+        )
+        assert result.converged is False
+        assert result.feasibility_detail == "marginal"
+
+    def test_no_exit_message_but_not_converged(self, sample_text):
+        """Without EXIT line, non-converged is classified as infeasible."""
+        modified = sample_text.replace(
+            "EXIT: Optimal Solution Found.", ""
+        ).replace(
+            "Convergence status                  CONVERGED",
+            "Convergence status                  DID NOT CONVERGE",
+        )
+        result = parse_opflow_output(modified)
+        assert result.converged is False
+        assert result.feasibility_detail == "infeasible"
+
+    def test_convergence_status_full_did_not_converge(self, sample_text):
+        """Regex now captures full 'DID NOT CONVERGE' instead of just 'DID'."""
+        modified = sample_text.replace(
+            "Convergence status                  CONVERGED",
+            "Convergence status                  DID NOT CONVERGE",
+        ).replace(
+            "EXIT: Optimal Solution Found.",
+            "EXIT: Maximum Number of Iterations Exceeded.",
+        )
+        result = parse_opflow_output(modified)
+        # Strip trailing whitespace
+        assert result.convergence_status.strip() == "DID NOT CONVERGE"
+        assert result.feasibility_detail == "marginal"

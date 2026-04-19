@@ -25,7 +25,9 @@ _GOAL_TYPE_DEFS = (
     "- cost_minimization: User wants to minimize generation cost."
     " Best = lowest cost among feasible.\n"
     "- feasibility_boundary: User wants to find the limit of a parameter before infeasibility."
-    " Best = feasible iteration closest to the boundary.\n"
+    " Best = feasible iteration closest to the boundary. Marginal iterations"
+    " (solver did not fully converge but no violations detected) can serve"
+    " as boundary markers.\n"
     "- constraint_satisfaction: User wants to satisfy specific constraints."
     " Best = iteration that best satisfies them.\n"
     "- parameter_exploration: User is exploring what-if scenarios."
@@ -63,7 +65,12 @@ def build_classification_prompts(
         f"Termination reason: {termination_reason}\n"
         f"Total iterations: {stats['total_iterations']}\n"
         f"Feasible: {stats['feasible_count']} / "
-        f"Infeasible: {stats['infeasible_count']}\n"
+        f"Infeasible: {stats['infeasible_count']}"
+    )
+    if stats.get("marginal_count", 0) > 0:
+        user_prompt += f" / Marginal: {stats['marginal_count']}"
+    user_prompt += (
+        f"\n"
         f"Lowest-cost feasible: {stats['best_objective']} "
         f"(iteration {stats['best_iteration']})\n"
         f"Tokens used: ~{total_tokens:,}\n"

@@ -37,6 +37,8 @@ class JournalEntry:
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     steering_directive: Optional[str] = None  # Active steering directive at this iteration
     tracked_metrics: Optional[dict[str, float]] = None  # Multi-objective metric values
+    feasibility_detail: str = ""  # "feasible", "infeasible", or "marginal"
+    solver: str = ""  # Solver used (IPOPT, EMPAR, etc.)
 
 
 @dataclass
@@ -167,12 +169,34 @@ class SearchJournal:
         indicating failure. Returns the created entry.
         """
         if opflow_result is not None:
+            # Determine feasible flag: use feasibility_detail if available,
+            # otherwise fall back to converged + no power balance violation
+            if opflow_result.feasibility_detail:
+                feasible = opflow_result.feasibility_detail == "feasible"
+            else:
+                has_power_balance_violation = (
+                    opflow_result.losses_mw < 0 and opflow_result.total_load_mw > 0
+                )
+                feasible = opflow_result.converged and not has_power_balance_violation
+            # Determine feasibility_detail for the journal entry
+            if opflow_result.feasibility_detail:
+                feasibility_detail = opflow_result.feasibility_detail
+            else:
+                has_power_balance_violation = (
+                    opflow_result.losses_mw < 0 and opflow_result.total_load_mw > 0
+                )
+                if feasible:
+                    feasibility_detail = "feasible"
+                elif has_power_balance_violation:
+                    feasibility_detail = "infeasible"
+                else:
+                    feasibility_detail = "infeasible"
             entry = JournalEntry(
                 iteration=iteration,
                 description=description,
                 commands=commands,
                 objective_value=opflow_result.objective_value,
-                feasible=opflow_result.converged,
+                feasible=feasible,
                 convergence_status=opflow_result.convergence_status,
                 violations_count=opflow_result.num_violations,
                 voltage_min=opflow_result.voltage_min,
@@ -184,6 +208,8 @@ class SearchJournal:
                 mode=mode,
                 elapsed_seconds=sim_elapsed,
                 steering_directive=steering_directive,
+                feasibility_detail=feasibility_detail,
+                solver=opflow_result.solver,
             )
         else:
             entry = JournalEntry(
@@ -203,6 +229,7 @@ class SearchJournal:
                 mode=mode,
                 elapsed_seconds=sim_elapsed,
                 steering_directive=steering_directive,
+                feasibility_detail="infeasible",
             )
 
         self._entries.append(entry)
@@ -235,6 +262,7 @@ class SearchJournal:
             llm_reasoning=result_summary,
             mode="analyze",
             elapsed_seconds=0.0,
+            feasibility_detail="",
         )
         self._entries.append(entry)
         return entry
@@ -268,11 +296,16 @@ class SearchJournal:
             feas = "Yes"
             vrange = f"{e.voltage_min:.3f} - {e.voltage_max:.3f}"
             load = f"{e.max_line_loading_pct:>6.1f}%"
+        elif e.feasibility_detail == "marginal":
+            cost = f"{e.objective_value:>12,.2f}" if e.objective_value is not None else "         N/A"
+            feas = "Marg"
+            vrange = f"{e.voltage_min:.3f} - {e.voltage_max:.3f}" if e.voltage_min > 0 else "N/A          "
+            load = f"{e.max_line_loading_pct:>6.1f}%" if e.max_line_loading_pct > 0 else "   N/A"
         else:
-            cost = "         N/A"
+            cost = "         N/A" if e.objective_value is None else f"{e.objective_value:>12,.2f}"
             feas = "No "
-            vrange = "N/A          "
-            load = "   N/A"
+            vrange = f"{e.voltage_min:.3f} - {e.voltage_max:.3f}" if e.voltage_min > 0 else "N/A          "
+            load = f"{e.max_line_loading_pct:>6.1f}%" if e.max_line_loading_pct > 0 else "   N/A"
         return (
             f"{e.iteration:>4} | {desc} | {cost} | {feas}   "
             f"| {vrange:<13} | {load}"
@@ -307,6 +340,20 @@ class SearchJournal:
             for e in self._entries[tail_start:]:
                 lines.append(self._format_row(e))
 
+        # Add footnote if any marginal or EMPAR entries exist
+        has_marginal = any(e.feasibility_detail == "marginal" for e in self._entries)
+        has_empar = any(e.solver.strip().upper() == "EMPAR" for e in self._entries)
+        if has_marginal or has_empar:
+            lines.append("")
+            if has_marginal:
+                lines.append("Note: Marg = marginal convergence (solver did not fully converge")
+                lines.append("      but no constraint violations detected; use with caution).")
+            if has_empar:
+                lines.append(
+                    "WARNING: EMPAR solver always reports CONVERGED and does not verify "
+                    "N-1 security. Results reflect base-case feasibility only."
+                )
+
         return "\n".join(lines)
 
     def format_detailed(self) -> str:
@@ -325,11 +372,15 @@ class SearchJournal:
             parts.append(f"Mode: {e.mode}")
             parts.append(f"Description: {e.description}")
             parts.append(f"Convergence: {e.convergence_status}")
+            if e.solver:
+                parts.append(f"Solver: {e.solver}")
             if e.objective_value is not None:
                 parts.append(f"Objective value: ${e.objective_value:,.2f}")
             else:
                 parts.append("Objective value: N/A")
             parts.append(f"Feasible: {e.feasible}")
+            if e.feasibility_detail:
+                parts.append(f"Feasibility detail: {e.feasibility_detail}")
             parts.append(f"Violations: {e.violations_count}")
             parts.append(f"Voltage: {e.voltage_min:.3f} - {e.voltage_max:.3f} pu")
             parts.append(f"Max line loading: {e.max_line_loading_pct:.1f}%")
@@ -444,7 +495,7 @@ class SearchJournal:
             "voltage_min", "voltage_max", "max_line_loading_pct",
             "total_gen_mw", "total_load_mw", "llm_reasoning",
             "mode", "elapsed_seconds", "timestamp", "steering_directive",
-            "tracked_metrics",
+            "tracked_metrics", "feasibility_detail", "solver",
         ]
 
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -497,6 +548,7 @@ class SearchJournal:
 
         feasible = [e for e in self._entries if e.feasible and e.objective_value is not None]
         infeasible_count = sum(1 for e in self._entries if not e.feasible)
+        marginal_count = sum(1 for e in self._entries if e.feasibility_detail == "marginal")
 
         # Use override if provided and valid
         if best_iteration_override is not None:
@@ -520,6 +572,7 @@ class SearchJournal:
             "best_iteration": best_iteration,
             "feasible_count": len(feasible),
             "infeasible_count": infeasible_count,
+            "marginal_count": marginal_count,
             "objective_trend": [e.objective_value for e in self._entries],
             "voltage_range_trend": [
                 (e.voltage_min, e.voltage_max) for e in self._entries

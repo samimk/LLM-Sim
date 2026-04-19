@@ -503,14 +503,21 @@ class ReportGenerator:
         total_tokens = session.total_prompt_tokens + session.total_completion_tokens
 
         # Key results
+        marginal_count = sum(
+            1 for e in session.journal.entries if e.feasibility_detail == "marginal"
+        )
         lines = [
             f"Total iterations: {stats['total_iterations']}",
             f"Feasible solutions: {stats['feasible_count']}",
             f"Infeasible: {stats['infeasible_count']}",
+        ]
+        if marginal_count > 0:
+            lines.append(f"Marginal convergence: {marginal_count}")
+        lines.extend([
             f"Duration: {duration.total_seconds():.0f}s",
             f"Termination: {session.termination_reason}",
             f"Token usage: {total_tokens:,}" if total_tokens > 0 else "Token usage: N/A",
-        ]
+        ])
 
         if stats["best_objective"] is not None:
             base_entry = session.journal.entries[0] if session.journal.entries else None
@@ -734,11 +741,17 @@ class ReportGenerator:
         rows = [header]
 
         for e in session.journal.entries:
+            if e.feasibility_detail == "marginal":
+                feas_text = "Marg"
+            elif e.feasible:
+                feas_text = "Y"
+            else:
+                feas_text = "N"
             rows.append([
                 str(e.iteration),
                 e.description[:40],
                 f"${e.objective_value:,.2f}" if e.objective_value is not None else "FAILED",
-                "Y" if e.feasible else "N",
+                feas_text,
                 f"{e.voltage_min:.3f}" if e.voltage_min > 0 else "—",
                 f"{e.voltage_max:.3f}" if e.voltage_max > 0 else "—",
                 f"{e.max_line_loading_pct:.1f}" if e.max_line_loading_pct > 0 else "—",
@@ -761,9 +774,34 @@ class ReportGenerator:
         ]))
         elements.append(table)
 
-        return elements
+        # Add EMPAR warning if any iteration used EMPAR solver
+        has_empar = any(
+            e.solver.strip().upper() == "EMPAR"
+            for e in session.journal.entries
+        )
+        if has_empar:
+            empar_warning = (
+                "⚠ EMPAR solver was used. EMPAR always reports CONVERGED and does "
+                "not verify N-1 security. Results reflect base-case feasibility only, "
+                "not N-1-secure loadability. For accurate N-1 security analysis, use "
+                "the IPOPT solver."
+            )
+            elements.append(Paragraph(empar_warning, s["warning"] if "warning" in s else s["body"]))
 
-    # ── Steering History ─────────────────────────────────────────────────
+        # Add marginal convergence note if any iteration was marginal
+        has_marginal = any(
+            e.feasibility_detail == "marginal"
+            for e in session.journal.entries
+        )
+        if has_marginal:
+            marginal_note = (
+                "Note: Iterations marked 'Marg' had marginal convergence "
+                "(solver did not fully converge but no constraint violations were "
+                "detected). These results should be treated with caution."
+            )
+            elements.append(Paragraph(marginal_note, s["body"]))
+
+        return elements
 
     def _build_steering_section(self, steering_history: list[dict]) -> list:
         """Build a 'Steering History' section for the PDF report."""

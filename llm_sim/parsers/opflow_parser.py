@@ -25,7 +25,7 @@ _EXIT_RE = re.compile(r"EXIT:\s*(.+)")
 _MODEL_RE = re.compile(r"^Model\s+(\S+)", re.MULTILINE)
 _SOLVER_RE = re.compile(r"^Solver\s+(\S+)", re.MULTILINE)
 _OBJECTIVE_TYPE_RE = re.compile(r"^Objective\s+(\S+)", re.MULTILINE)
-_CONVERGENCE_RE = re.compile(r"^Convergence status\s+(\S+)", re.MULTILINE)
+_CONVERGENCE_RE = re.compile(r"^Convergence status\s+(.+)$", re.MULTILINE)
 _OBJ_VALUE_RE = re.compile(r"^Objective value\s+(?:\(base\)\s+)?([\d.eE+-]+)", re.MULTILINE)
 
 _BUS_HEADER_RE = re.compile(r"^Bus\s+Pd\s+Pd", re.MULTILINE)
@@ -67,6 +67,26 @@ def _parse_table_rows(text: str, start_pos: int) -> list[list[str]]:
     return rows
 
 
+def _is_marginal_exit(exit_status: str) -> bool:
+    """Check if an IPOPT exit status indicates a marginal solution.
+
+    Marginal means the solver did not fully converge but the solution data may
+    still be usable — e.g., maximum iterations exceeded or search direction too
+    small. In contrast, "Infeasible Problem Detected" or "Diverging Iterates"
+    clearly indicate infeasibility.
+    """
+    marginal_indicators = [
+        "Maximum Number of Iterations Exceeded",
+        "Maximum Iterations Exceeded",
+        "Search Direction Becomes Too Small",
+        "Solved To Acceptable Level",
+    ]
+    for indicator in marginal_indicators:
+        if indicator in exit_status:
+            return True
+    return False
+
+
 def parse_opflow_output(
     stdout: str,
     bus_limits: dict[int, tuple[float, float]] | None = None,
@@ -97,8 +117,8 @@ def parse_opflow_output(
     solve_time = float(m.group(1)) if m else 0.0
 
     m = _EXIT_RE.search(stdout)
-    exit_msg = m.group(1).strip() if m else ""
-    converged = "Optimal Solution Found" in exit_msg
+    ipopt_exit_status = m.group(1).strip() if m else ""
+    converged = "Optimal Solution Found" in ipopt_exit_status or "Solved To Acceptable Level" in ipopt_exit_status
 
     # --- Section 2: OPFLOW summary ---
     m = _MODEL_RE.search(stdout)
@@ -111,7 +131,7 @@ def parse_opflow_output(
     objective_type = m.group(1) if m else ""
 
     m = _CONVERGENCE_RE.search(stdout)
-    convergence_status = m.group(1) if m else ("CONVERGED" if converged else "UNKNOWN")
+    convergence_status = m.group(1).strip() if m else ("CONVERGED" if converged else "UNKNOWN")
 
     m = _OBJ_VALUE_RE.search(stdout)
     objective_value = float(m.group(1)) if m else 0.0
@@ -218,6 +238,34 @@ def parse_opflow_output(
             if br.St > br.Slim:
                 violations.append(f"Branch {br.from_bus}-{br.to_bus}: St={br.St:.2f} > Slim={br.Slim:.2f} MVA")
 
+    # Power balance check: generation must cover load + losses
+    losses_mw = total_gen_mw - total_load_mw
+    power_balance_mismatch_pct = 0.0
+    if total_load_mw > 0:
+        power_balance_mismatch_pct = losses_mw / total_load_mw * 100
+
+    if losses_mw < 0 and total_load_mw > 0:
+        violations.append(
+            f"Power balance violation: generation ({total_gen_mw:.2f} MW) < "
+            f"load ({total_load_mw:.2f} MW), losses = {losses_mw:.2f} MW"
+        )
+
+    # Determine feasibility_detail based on convergence, violations, and IPOPT status
+    has_power_balance_violation = losses_mw < 0 and total_load_mw > 0
+
+    if converged and not has_power_balance_violation:
+        feasibility_detail = "feasible"
+    elif has_power_balance_violation:
+        feasibility_detail = "infeasible"
+    elif converged:
+        # Converged but has structural violations (unusual but possible)
+        feasibility_detail = "infeasible"
+    elif _is_marginal_exit(ipopt_exit_status):
+        feasibility_detail = "marginal"
+    else:
+        # Not converged and no IPOPT exit, or IPOPT indicates infeasibility
+        feasibility_detail = "infeasible"
+
     return OPFLOWResult(
         converged=converged,
         objective_value=objective_value,
@@ -240,6 +288,10 @@ def parse_opflow_output(
         max_line_loading_pct=max_line_loading_pct,
         num_violations=len(violations),
         violation_details=violations,
+        losses_mw=losses_mw,
+        power_balance_mismatch_pct=power_balance_mismatch_pct,
+        ipopt_exit_status=ipopt_exit_status,
+        feasibility_detail=feasibility_detail,
     )
 
 

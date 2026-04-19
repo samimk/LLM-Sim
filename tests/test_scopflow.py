@@ -69,7 +69,7 @@ From       To       Status     Sft      Stf     Slim     mult_Sf  mult_St
 ----------------------------------------------------------------------------------------
 Gen      Status     Fuel     Pg       Qg       Pmin     Pmax     Qmin     Qmax
 ----------------------------------------------------------------------------------------
-1          1        COAL     95.00    18.50    10.00   150.00   -50.00    50.00
+1          1        COAL     105.00    18.50    10.00   150.00   -50.00    50.00
 2          1        GAS      42.43    12.30     5.00    80.00   -30.00    30.00
 """
 
@@ -102,7 +102,7 @@ From       To       Status     Sft      Stf     Slim     mult_Sf  mult_St
 ----------------------------------------------------------------------------------------
 Gen      Status     Fuel     Pg       Qg       Pmin     Pmax     Qmin     Qmax
 ----------------------------------------------------------------------------------------
-1          1        COAL     95.00    18.50    10.00   150.00   -50.00    50.00
+1          1        COAL     105.00    18.50    10.00   150.00   -50.00    50.00
 2          1        GAS      42.43    12.30     5.00    80.00   -30.00    30.00
 """
 
@@ -367,7 +367,7 @@ From       To       Status     Sft      Stf     Slim     mult_Sf  mult_St
 ----------------------------------------------------------------------------------------
 Gen      Status     Fuel     Pg       Qg       Pmin     Pmax     Qmin     Qmax
 ----------------------------------------------------------------------------------------
-1          1        COAL     95.00    18.50    10.00   150.00   -50.00    50.00
+1          1        COAL     105.00    18.50    10.00   150.00   -50.00    50.00
 2          1        GAS      42.43    12.30     5.00    80.00   -30.00    30.00
 """
 
@@ -402,7 +402,7 @@ From       To       Status     Sft      Stf     Slim     mult_Sf  mult_St
 ----------------------------------------------------------------------------------------
 Gen      Status     Fuel     Pg       Qg       Pmin     Pmax     Qmin     Qmax
 ----------------------------------------------------------------------------------------
-1          1        COAL     95.00    18.50    10.00   150.00   -50.00    50.00
+1          1        COAL     105.00    18.50    10.00   150.00   -50.00    50.00
 2          1        GAS      42.43    12.30     5.00    80.00   -30.00    30.00
 """
 
@@ -423,7 +423,7 @@ class TestSCOPFLOWEMPARParsing:
         assert "EXIT:" not in SAMPLE_SCOPFLOW_EMPAR_DID_NOT_CONVERGE
         result, _ = parse_scopflow_output(SAMPLE_SCOPFLOW_EMPAR_DID_NOT_CONVERGE)
         assert result.converged is False
-        assert result.convergence_status in ("DID", "DID NOT CONVERGE")
+        assert result.convergence_status == "DID NOT CONVERGE"
 
     def test_original_scopflow_with_exit_still_works(self):
         """Regression: original SCOPFLOW output (with EXIT line) still converged=True."""
@@ -431,3 +431,29 @@ class TestSCOPFLOWEMPARParsing:
         result, _ = parse_scopflow_output(SAMPLE_SCOPFLOW_OUTPUT)
         assert result.converged is True
         assert result.convergence_status == "CONVERGED"
+        assert result.feasibility_detail == "feasible"
+
+    def test_empar_converged_feasibility_detail(self):
+        """EMPAR CONVERGED with positive losses should be feasible."""
+        result, _ = parse_scopflow_output(SAMPLE_SCOPFLOW_EMPAR_CONVERGED)
+        assert result.feasibility_detail == "feasible"
+
+    def test_empar_did_not_converge_feasibility_detail(self):
+        """EMPAR DID NOT CONVERGE should be classified as infeasible (no EXIT status)."""
+        result, _ = parse_scopflow_output(SAMPLE_SCOPFLOW_EMPAR_DID_NOT_CONVERGE)
+        assert result.convergence_status == "DID NOT CONVERGE"
+        assert result.feasibility_detail == "infeasible"
+
+    def test_ipopt_scopflow_marginal(self):
+        """SCOPFLOW with IPOPT max iterations exceeded should be marginal."""
+        marginal_output = SAMPLE_SCOPFLOW_OUTPUT.replace(
+            "EXIT: Optimal Solution Found.",
+            "EXIT: Maximum Number of Iterations Exceeded.",
+        ).replace(
+            "Convergence status              CONVERGED",
+            "Convergence status              DID NOT CONVERGE",
+        )
+        result, _ = parse_scopflow_output(marginal_output)
+        assert result.convergence_status == "DID NOT CONVERGE"
+        assert result.feasibility_detail == "marginal"
+        assert result.converged is False

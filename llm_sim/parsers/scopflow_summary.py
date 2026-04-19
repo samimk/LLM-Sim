@@ -17,6 +17,10 @@ def scopflow_results_summary(result: OPFLOWResult, num_contingencies: int = 0) -
     lines: list[str] = []
     lines.append("=== SCOPFLOW Results (Security-Constrained) ===")
     lines.append(f"Status: {result.convergence_status}")
+    if result.feasibility_detail:
+        lines.append(f"Feasibility: {result.feasibility_detail}")
+    if result.ipopt_exit_status:
+        lines.append(f"Solver exit: {result.ipopt_exit_status}")
     lines.append(f"Objective value (base case cost): ${result.objective_value:,.2f}")
     lines.append(f"Solver: {result.solver}")
     lines.append(f"Contingencies enforced: {num_contingencies}")
@@ -44,12 +48,15 @@ def scopflow_results_summary(result: OPFLOWResult, num_contingencies: int = 0) -
     lines.append("")
 
     # Generation vs load
-    losses = result.total_gen_mw - result.total_load_mw
-    lines.append(
+    losses = result.losses_mw
+    gen_load_line = (
         f"Generation: {result.total_gen_mw:.2f} MW / "
         f"Load: {result.total_load_mw:.2f} MW / "
         f"Losses: {losses:.2f} MW"
     )
+    if losses < 0 and result.total_load_mw > 0:
+        gen_load_line += "  ** UNPHYSICAL — negative losses **"
+    lines.append(gen_load_line)
     lines.append(
         f"Reactive: Gen {result.total_gen_mvar:.2f} MVAr / "
         f"Load {result.total_load_mvar:.2f} MVAr"

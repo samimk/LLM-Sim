@@ -83,3 +83,15 @@ class OPFLOWResult:
     max_line_loading_pct: float = 0.0
     num_violations: int = 0
     violation_details: list[str] = field(default_factory=list)
+    losses_mw: float = 0.0
+    power_balance_mismatch_pct: float = 0.0
+
+    # IPOPT exit status and feasibility classification
+    # ipopt_exit_status: full EXIT message from IPOPT (e.g. "Optimal Solution Found.")
+    #   Empty string if no EXIT line found (EMPAR solver or missing).
+    # feasibility_detail: one of "feasible", "infeasible", "marginal"
+    #   feasible   = converged AND no power balance violation
+    #   infeasible = NOT converged OR power balance violation (negative losses)
+    #   marginal   = NOT converged but no structural violations, solution may be usable
+    ipopt_exit_status: str = ""
+    feasibility_detail: str = ""
