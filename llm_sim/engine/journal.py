@@ -39,6 +39,7 @@ class JournalEntry:
     tracked_metrics: Optional[dict[str, float]] = None  # Multi-objective metric values
     feasibility_detail: str = ""  # "feasible", "infeasible", or "marginal"
     solver: str = ""  # Solver used (IPOPT, EMPAR, etc.)
+    num_steps: int = 0  # TCOPFLOW: number of time periods
 
 
 @dataclass
@@ -162,6 +163,7 @@ class SearchJournal:
         llm_reasoning: str,
         mode: str,
         steering_directive: Optional[str] = None,
+        num_steps: int = 0,
     ) -> JournalEntry:
         """Create and append a journal entry from OPFLOW results.
 
@@ -210,6 +212,7 @@ class SearchJournal:
                 steering_directive=steering_directive,
                 feasibility_detail=feasibility_detail,
                 solver=opflow_result.solver,
+                num_steps=num_steps,
             )
         else:
             entry = JournalEntry(
@@ -230,6 +233,7 @@ class SearchJournal:
                 elapsed_seconds=sim_elapsed,
                 steering_directive=steering_directive,
                 feasibility_detail="infeasible",
+                num_steps=num_steps,
             )
 
         self._entries.append(entry)
@@ -374,6 +378,8 @@ class SearchJournal:
             parts.append(f"Convergence: {e.convergence_status}")
             if e.solver:
                 parts.append(f"Solver: {e.solver}")
+            if e.num_steps > 0:
+                parts.append(f"Time periods: {e.num_steps}")
             if e.objective_value is not None:
                 parts.append(f"Objective value: ${e.objective_value:,.2f}")
             else:
@@ -495,7 +501,7 @@ class SearchJournal:
             "voltage_min", "voltage_max", "max_line_loading_pct",
             "total_gen_mw", "total_load_mw", "llm_reasoning",
             "mode", "elapsed_seconds", "timestamp", "steering_directive",
-            "tracked_metrics", "feasibility_detail", "solver",
+            "tracked_metrics", "feasibility_detail", "solver", "num_steps",
         ]
 
         with open(path, "w", newline="", encoding="utf-8") as f:

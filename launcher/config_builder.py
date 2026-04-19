@@ -72,6 +72,94 @@ def scan_contingency_files(data_dir: Path | None = None) -> list[Path]:
     return sorted(data_dir.glob("*.cont"))
 
 
+def scan_profile_files(data_dir: Path | None = None) -> list[Path]:
+    """Find all load profile CSV files in the data directory.
+
+    Looks for files matching *_load_P.csv and *_load_Q.csv.
+
+    Args:
+        data_dir: Path to data directory. Defaults to <project_root>/data.
+
+    Returns:
+        Sorted list of profile CSV file paths (absolute).
+    """
+    if data_dir is None:
+        data_dir = get_project_root() / "data"
+    if not data_dir.is_dir():
+        return []
+    return sorted(data_dir.glob("*_load_*.csv"))
+
+
+_KNOWN_CASE_SUFFIXES = ("mod",)
+
+
+def _case_stem_variants(case_stem: str) -> list[str]:
+    """Generate variant case name stems for profile matching.
+
+    Implements the layered fallback convention:
+    1. Full case name stem (e.g., "case9mod")
+    2. Strip known suffixes (e.g., "case9mod" → "case9")
+    3. Strip trailing numeric segments (e.g., "case_ACTIVSg200" → "case_ACTIVSg200")
+
+    Args:
+        case_stem: The case file stem (filename without .m extension).
+
+    Returns:
+        List of candidate stems in priority order (no duplicates).
+    """
+    variants = [case_stem]
+    for suffix in _KNOWN_CASE_SUFFIXES:
+        if case_stem.endswith(suffix):
+            stripped = case_stem[: -len(suffix)].rstrip("_")
+            if stripped and stripped != case_stem:
+                variants.append(stripped)
+    return list(dict.fromkeys(variants))
+
+
+def match_profiles_for_case(
+    case_path: Path,
+    data_dir: Path | None = None,
+) -> dict[str, list[Path]]:
+    """Find load profile CSV files matching a base case name.
+
+    Uses layered fallback matching:
+    1. Try exact prefix: {case_stem}_*load_P.csv
+    2. Strip known suffixes: e.g., case9mod → case9_*load_P.csv
+    3. If no matches, return all available profiles as fallback.
+
+    Args:
+        case_path: Path to the .m base case file.
+        data_dir: Path to data directory. Defaults to <project_root>/data.
+
+    Returns:
+        Dict with keys "pload" and "qload", each containing a list of
+        matching profile paths sorted by name. Empty lists if no matches.
+    """
+    if data_dir is None:
+        data_dir = get_project_root() / "data"
+    if not data_dir.is_dir():
+        return {"pload": [], "qload": []}
+
+    all_p = sorted(data_dir.glob("*_load_P.csv"))
+    all_q = sorted(data_dir.glob("*_load_Q.csv"))
+
+    case_stem = case_path.stem
+    variants = _case_stem_variants(case_stem)
+
+    for stem in variants:
+        p_matches = sorted(
+            p for p in all_p if p.name.startswith(stem + "_") or p.name.startswith(stem)
+        )
+        q_matches = sorted(
+            q for q in all_q if q.name.startswith(stem + "_") or q.name.startswith(stem)
+        )
+        if p_matches or q_matches:
+            return {"pload": p_matches, "qload": q_matches}
+
+    # Fallback: return all profiles
+    return {"pload": all_p, "qload": all_q}
+
+
 def load_example_goals() -> list[dict[str, str]]:
     """Load preset search goals from assets/example_goals.yaml.
 
@@ -99,10 +187,10 @@ DEFAULT_MODELS: dict[str, str] = {
 BACKENDS: list[str] = ["anthropic", "openai", "ollama", "ollama-cloud"]
 
 # Available applications
-APPLICATIONS: list[str] = ["opflow", "dcopflow", "scopflow"]
+APPLICATIONS: list[str] = ["opflow", "dcopflow", "scopflow", "tcopflow"]
 
 # Future applications (shown as disabled in the UI)
-FUTURE_APPLICATIONS: list[str] = ["tcopflow", "sopflow", "pflow"]
+FUTURE_APPLICATIONS: list[str] = ["sopflow", "pflow"]
 
 # Available search modes
 MODES: list[str] = ["accumulative", "fresh"]
@@ -127,6 +215,12 @@ def build_config_overrides(
     verbose: bool = False,
     search_mode: str = "standard",
     mpi_np: int = 1,
+    pload_profile: str | Path | None = None,
+    qload_profile: str | Path | None = None,
+    wind_profile: str | Path | None = None,
+    tcopflow_duration: float = 1.0,
+    tcopflow_dT: float = 60.0,
+    tcopflow_iscoupling: int = 1,
 ) -> dict[str, Any]:
     """Build a CLI-style overrides dict from GUI widget values.
 
@@ -177,6 +271,24 @@ def build_config_overrides(
 
     if openai_base_url:
         overrides["llm.openai_base_url"] = openai_base_url
+
+    if pload_profile:
+        overrides["search.pload_profile"] = str(pload_profile)
+
+    if qload_profile:
+        overrides["search.qload_profile"] = str(qload_profile)
+
+    if wind_profile:
+        overrides["search.wind_profile"] = str(wind_profile)
+
+    if tcopflow_duration != 1.0:
+        overrides["search.tcopflow_duration"] = tcopflow_duration
+
+    if tcopflow_dT != 60.0:
+        overrides["search.tcopflow_dT"] = tcopflow_dT
+
+    if tcopflow_iscoupling != 1:
+        overrides["search.tcopflow_iscoupling"] = tcopflow_iscoupling
 
     return overrides
 

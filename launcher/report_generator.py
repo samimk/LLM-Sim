@@ -265,6 +265,12 @@ class ReportGenerator:
         story.append(PageBreak())
         story.extend(self._build_iteration_log(session))
 
+        # TCOPFLOW temporal analysis section
+        tcopflow_period_data = getattr(session, "tcopflow_period_data", None)
+        if session.application == "tcopflow" and tcopflow_period_data:
+            story.append(PageBreak())
+            story.extend(self._build_tcopflow_temporal_section(session, tcopflow_period_data))
+
         # Add steering history section if any directives were used
         if steering_history:
             story.append(PageBreak())
@@ -467,8 +473,15 @@ class ReportGenerator:
         elements.append(Paragraph(
             f"Date: {start.strftime('%Y-%m-%d %H:%M:%S')}", s["body"],
         ))
+        _APP_LABELS = {
+            "opflow": "Optimal Power Flow (OPFLOW)",
+            "dcopflow": "DC Optimal Power Flow (DCOPFLOW)",
+            "scopflow": "Security-Constrained OPF (SCOPFLOW)",
+            "tcopflow": "Multi-Period OPF (TCOPFLOW)",
+        }
+        app_label = _APP_LABELS.get(session.application, session.application)
         elements.append(Paragraph(
-            f"Application: {session.application}", s["body"],
+            f"Application: {app_label}", s["body"],
         ))
         elements.append(Paragraph(
             f"Backend: {session.config.llm.backend} / {session.config.llm.model}", s["body"],
@@ -513,6 +526,10 @@ class ReportGenerator:
         ]
         if marginal_count > 0:
             lines.append(f"Marginal convergence: {marginal_count}")
+        if session.application == "tcopflow":
+            max_np = max((e.num_steps for e in session.journal.entries if e.num_steps > 0), default=0)
+            if max_np > 0:
+                lines.append(f"Time periods per run: {max_np}")
         lines.extend([
             f"Duration: {duration.total_seconds():.0f}s",
             f"Termination: {session.termination_reason}",
@@ -737,7 +754,11 @@ class ReportGenerator:
         elements: list = []
         elements.append(Paragraph("Iteration Log", s["heading1"]))
 
-        header = ["Iter", "Description", "Cost ($)", "Feas.", "V_min", "V_max", "Load%", "Time(s)"]
+        is_tcopflow = session.application == "tcopflow"
+        if is_tcopflow:
+            header = ["Iter", "Description", "Cost ($)", "Feas.", "Np", "V_min", "V_max", "Load%", "Time(s)"]
+        else:
+            header = ["Iter", "Description", "Cost ($)", "Feas.", "V_min", "V_max", "Load%", "Time(s)"]
         rows = [header]
 
         for e in session.journal.entries:
@@ -747,18 +768,26 @@ class ReportGenerator:
                 feas_text = "Y"
             else:
                 feas_text = "N"
-            rows.append([
+            row = [
                 str(e.iteration),
                 e.description[:40],
                 f"${e.objective_value:,.2f}" if e.objective_value is not None else "FAILED",
                 feas_text,
+            ]
+            if is_tcopflow:
+                row.append(str(e.num_steps) if e.num_steps > 0 else "—")
+            row.extend([
                 f"{e.voltage_min:.3f}" if e.voltage_min > 0 else "—",
                 f"{e.voltage_max:.3f}" if e.voltage_max > 0 else "—",
                 f"{e.max_line_loading_pct:.1f}" if e.max_line_loading_pct > 0 else "—",
                 f"{e.elapsed_seconds:.1f}",
             ])
+            rows.append(row)
 
-        col_widths = [1.2 * cm, 5.5 * cm, 2.8 * cm, 1.2 * cm, 1.8 * cm, 1.8 * cm, 1.5 * cm, 1.5 * cm]
+        if is_tcopflow:
+            col_widths = [1.2 * cm, 4.5 * cm, 2.8 * cm, 1.2 * cm, 1.0 * cm, 1.8 * cm, 1.8 * cm, 1.5 * cm, 1.5 * cm]
+        else:
+            col_widths = [1.2 * cm, 5.5 * cm, 2.8 * cm, 1.2 * cm, 1.8 * cm, 1.8 * cm, 1.5 * cm, 1.5 * cm]
         table = Table(rows, colWidths=col_widths, repeatRows=1)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3498db")),
@@ -800,6 +829,121 @@ class ReportGenerator:
                 "detected). These results should be treated with caution."
             )
             elements.append(Paragraph(marginal_note, s["body"]))
+
+        return elements
+
+    # ── TCOPFLOW Temporal Analysis ──────────────────────────────────────
+
+    def _build_tcopflow_temporal_section(
+        self,
+        session: SearchSession,
+        period_data: list[dict],
+    ) -> list:
+        """Build a TCOPFLOW temporal analysis section for the PDF report.
+
+        Shows how generation, load, voltage, and line loading vary across
+        the time horizon, demonstrating the influence of ramp coupling and
+        temporal load profiles on the solution.
+        """
+        s = self._styles
+        elements: list = []
+        elements.append(Paragraph("Temporal Analysis (TCOPFLOW)", s["heading1"]))
+
+        num_steps = len(period_data)
+        num_steps_journal = max((e.num_steps for e in session.journal.entries if e.num_steps > 0), default=0)
+        dT = getattr(session, "_tcopflow_dT_min", 0.0)
+        duration = getattr(session, "_tcopflow_duration_min", 0.0)
+        coupling = getattr(session, "_tcopflow_is_coupling", True)
+
+        coupling_str = "enabled" if coupling else "disabled"
+        elements.append(Paragraph(
+            f"TCOPFLOW solved a {num_steps}-period optimization over "
+            f"{duration:.0f} minutes (dT = {dT:.0f} min) with "
+            f"generator ramp coupling {coupling_str}. The table below shows "
+            f"how network conditions evolve across the time horizon.",
+            s["body"],
+        ))
+        elements.append(Spacer(1, 0.5 * cm))
+
+        # Per-period table
+        header = ["Period", "Load (MW)", "Gen (MW)", "V_min (pu)", "V_max (pu)", "Max Load (%)", "Losses (MW)"]
+        rows = [header]
+        for p in period_data:
+            rows.append([
+                str(p["period"]),
+                f"{p['total_load_mw']:.1f}",
+                f"{p['total_gen_mw']:.1f}",
+                f"{p['voltage_min']:.3f}",
+                f"{p['voltage_max']:.3f}",
+                f"{p['max_line_loading_pct']:.1f}",
+                f"{p['losses_mw']:.1f}",
+            ])
+
+        col_widths = [1.5 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm]
+        table = Table(rows, colWidths=col_widths, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3498db")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), self._font_bold),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("FONTNAME", (0, 1), (-1, -1), self._font),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
+            ("ALIGN", (0, 0), (0, -1), "CENTER"),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 0.5 * cm))
+
+        # Temporal trend analysis
+        if len(period_data) >= 2:
+            first = period_data[0]
+            last = period_data[-1]
+            load_delta = last["total_load_mw"] - first["total_load_mw"]
+            gen_delta = last["total_gen_mw"] - first["total_gen_mw"]
+            vmin_delta = last["voltage_min"] - first["voltage_min"]
+            vmax_delta = last["voltage_max"] - first["voltage_max"]
+            loading_delta = last["max_line_loading_pct"] - first["max_line_loading_pct"]
+
+            peak_load = max(period_data, key=lambda p: p["total_load_mw"])
+            worst_vmin = min(period_data, key=lambda p: p["voltage_min"])
+            worst_loading = max(period_data, key=lambda p: p["max_line_loading_pct"])
+
+            lines = [
+                f"Load change: {first['total_load_mw']:.1f} → {last['total_load_mw']:.1f} MW ({load_delta:+.1f} MW across horizon)",
+                f"Generation change: {first['total_gen_mw']:.1f} → {last['total_gen_mw']:.1f} MW ({gen_delta:+.1f} MW)",
+                f"Voltage minimum: {first['voltage_min']:.3f} → {last['voltage_min']:.3f} pu ({vmin_delta:+.4f} pu)",
+                f"Voltage maximum: {first['voltage_max']:.3f} → {last['voltage_max']:.3f} pu ({vmax_delta:+.4f} pu)",
+                f"Max line loading: {first['max_line_loading_pct']:.1f}% → {last['max_line_loading_pct']:.1f}% ({loading_delta:+.1f}%)",
+                "",
+                f"Peak demand: period {peak_load['period']} ({peak_load['total_load_mw']:.1f} MW)",
+                f"Worst voltage: period {worst_vmin['period']} (Vmin = {worst_vmin['voltage_min']:.3f} pu)",
+                f"Worst line loading: period {worst_loading['period']} ({worst_loading['max_line_loading_pct']:.1f}%)",
+            ]
+            if coupling:
+                lines.append(
+                    "Generator ramp coupling was enabled — the solver must respect "
+                    "generator output change limits between consecutive periods."
+                )
+            for line in lines:
+                elements.append(Paragraph(self._escape_xml(line), s["body"]))
+
+        # Worst-case period identification
+        elements.append(Spacer(1, 0.3 * cm))
+        worst_period = min(
+            period_data,
+            key=lambda p: p["voltage_min"] * 1000 - p["max_line_loading_pct"],
+        )
+        elements.append(Paragraph(
+            f"The worst-case period is <b>period {worst_period['period']}</b> "
+            f"(Vmin = {worst_period['voltage_min']:.3f} pu, "
+            f"max loading = {worst_period['max_line_loading_pct']:.1f}%). "
+            f"Overall feasibility is determined by the worst period.",
+            s["body"],
+        ))
 
         return elements
 

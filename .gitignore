@@ -31,3 +31,4 @@ configs/local_config.yaml
 *.swo
 .claude/
 /prompts/
+opencode.md

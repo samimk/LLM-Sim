@@ -28,6 +28,13 @@ from llm_sim.parsers.scopflow_parser import (
     parse_scopflow_simulation_result,
 )
 from llm_sim.parsers.scopflow_summary import scopflow_results_summary
+from llm_sim.parsers.tcopflow_parser import (
+    parse_tcopflow_output,
+    parse_tcopflow_simulation_result,
+    parse_tcopflow_period_files,
+    parse_tcopflow_metadata,
+)
+from llm_sim.parsers.tcopflow_summary import tcopflow_results_summary
 
 _logger = logging.getLogger("llm_sim.parsers")
 
@@ -41,12 +48,20 @@ def parse_simulation_result_for_app(sim_result, application: str, bus_limits=Non
     For 'opflow' and 'dcopflow': use parse_simulation_result (same output format).
     For 'scopflow': use parse_scopflow_simulation_result (same tables, different header).
       Returns the OPFLOWResult portion of the tuple (metadata available separately).
+    For 'tcopflow': use parse_tcopflow_simulation_result (same tables, different header).
+      Returns the OPFLOWResult portion of the tuple (metadata available separately).
     Falls back to OPFLOW parser for unknown applications with a warning.
     """
     if application in _OPFLOW_COMPATIBLE_APPS:
         return parse_simulation_result(sim_result, bus_limits=bus_limits)
     if application == "scopflow":
         parsed = parse_scopflow_simulation_result(sim_result, bus_limits=bus_limits)
+        if parsed is None:
+            return None
+        opflow_result, _metadata = parsed
+        return opflow_result
+    if application == "tcopflow":
+        parsed = parse_tcopflow_simulation_result(sim_result, bus_limits=bus_limits)
         if parsed is None:
             return None
         opflow_result, _metadata = parsed
@@ -71,16 +86,34 @@ def parse_scopflow_metadata(sim_result) -> dict | None:
     return metadata
 
 
+def parse_tcopflow_metadata(sim_result) -> dict | None:
+    """Extract TCOPFLOW-specific metadata (num_steps, duration, etc.).
+
+    Returns a dict or None if parsing fails or the simulation did not succeed.
+    """
+    parsed = parse_tcopflow_simulation_result(sim_result)
+    if parsed is None:
+        return None
+    _opflow_result, metadata = parsed
+    return metadata
+
+
 def results_summary_for_app(result: OPFLOWResult, application: str, **kwargs) -> str:
     """Dispatch to the correct results summary generator based on application.
 
     For 'opflow': use existing results_summary().
     For 'dcopflow': use dcopflow_results_summary().
     For 'scopflow': use scopflow_results_summary() with optional num_contingencies.
+    For 'tcopflow': use tcopflow_results_summary() with optional TCOPFLOW kwargs.
     For unknown applications: fall back to results_summary() with a warning.
 
     kwargs:
         num_contingencies (int): Number of contingencies enforced (SCOPFLOW only).
+        num_steps (int): Number of time steps (TCOPFLOW only).
+        duration_min (float): Duration in minutes (TCOPFLOW only).
+        dT_min (float): Time-step size in minutes (TCOPFLOW only).
+        is_coupling (bool): Ramp constraints enabled (TCOPFLOW only).
+        period_data (list[dict]): Per-period parsed data (TCOPFLOW only).
     """
     if application == "dcopflow":
         return dcopflow_results_summary(result)
@@ -89,6 +122,15 @@ def results_summary_for_app(result: OPFLOWResult, application: str, **kwargs) ->
     if application == "scopflow":
         return scopflow_results_summary(
             result, num_contingencies=kwargs.get("num_contingencies", 0)
+        )
+    if application == "tcopflow":
+        return tcopflow_results_summary(
+            result,
+            num_steps=kwargs.get("num_steps", 0),
+            duration_min=kwargs.get("duration_min", 0.0),
+            dT_min=kwargs.get("dT_min", 0.0),
+            is_coupling=kwargs.get("is_coupling", True),
+            period_data=kwargs.get("period_data"),
         )
     _logger.warning(
         "Unknown application '%s' for results_summary_for_app — "
@@ -117,8 +159,13 @@ __all__ = [
     "parse_scopflow_output",
     "parse_scopflow_simulation_result",
     "parse_scopflow_metadata",
+    "parse_tcopflow_output",
+    "parse_tcopflow_simulation_result",
+    "parse_tcopflow_period_files",
+    "parse_tcopflow_metadata",
     "results_summary",
     "results_summary_for_app",
     "dcopflow_results_summary",
     "scopflow_results_summary",
+    "tcopflow_results_summary",
 ]

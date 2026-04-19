@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -202,6 +202,107 @@ class TestTimeout:
 
 @pytest.mark.skipif(not _has_opflow, reason="opflow binary not available")
 @pytest.mark.skipif(not _has_test_file, reason="case_ACTIVSg200.m not in data/")
+class TestMPIGuard:
+    """Verify mpirun is only prepended for SCOPFLOW, not for IPOPT-only apps."""
+
+    def _make_config_with_mpi(self, tmp_path: Path, mpi_np: int) -> tuple[ExagoConfig, OutputConfig]:
+        exago = ExagoConfig(
+            binary_dir=tmp_path / "bin",
+            opflow_binary=None,
+            scopflow_binary=None,
+            tcopflow_binary=None,
+            sopflow_binary=None,
+            dcopflow_binary=None,
+            pflow_binary=None,
+            env_script=None,
+            timeout=120,
+            mpi_np=mpi_np,
+        )
+        output = OutputConfig(
+            workdir=tmp_path / "workdir",
+            logs_dir=tmp_path / "logs",
+            save_journal=True,
+            journal_format="json",
+            save_modified_files=True,
+            verbose=False,
+        )
+        return exago, output
+
+    def _make_fake_bin(self, bin_dir: Path, name: str) -> Path:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        fake_bin = bin_dir / name
+        fake_bin.write_text("#!/bin/bash\necho OK; exit 0\n")
+        fake_bin.chmod(0o755)
+        return fake_bin
+
+    @pytest.mark.skipif(not _has_test_file, reason="test data not available")
+    def test_no_mpirun_for_opflow(self, tmp_path: Path):
+        self._make_fake_bin(tmp_path / "bin", "opflow")
+        exago, output = self._make_config_with_mpi(tmp_path, mpi_np=4)
+        executor = SimulationExecutor(exago, output)
+        net = parse_matpower(ACTIVSG200)
+
+        with patch("llm_sim.engine.executor.subprocess.run") as mock_sub:
+            mock_sub.return_value = MagicMock(stdout="OK", stderr="", returncode=0)
+            executor.run(net, application="opflow", iteration=0)
+            cmd_arg = mock_sub.call_args[0][0]
+            assert cmd_arg[0] != "mpirun"
+
+    @pytest.mark.skipif(not _has_test_file, reason="test data not available")
+    def test_no_mpirun_for_tcopflow(self, tmp_path: Path):
+        self._make_fake_bin(tmp_path / "bin", "tcopflow")
+        exago, output = self._make_config_with_mpi(tmp_path, mpi_np=4)
+        executor = SimulationExecutor(exago, output)
+        net = parse_matpower(ACTIVSG200)
+
+        with patch("llm_sim.engine.executor.subprocess.run") as mock_sub:
+            mock_sub.return_value = MagicMock(stdout="OK", stderr="", returncode=0)
+            executor.run(net, application="tcopflow", iteration=0)
+            cmd_arg = mock_sub.call_args[0][0]
+            assert cmd_arg[0] != "mpirun"
+
+    @pytest.mark.skipif(not _has_test_file, reason="test data not available")
+    def test_no_mpirun_for_dcopflow(self, tmp_path: Path):
+        self._make_fake_bin(tmp_path / "bin", "dcopflow")
+        exago, output = self._make_config_with_mpi(tmp_path, mpi_np=4)
+        executor = SimulationExecutor(exago, output)
+        net = parse_matpower(ACTIVSG200)
+
+        with patch("llm_sim.engine.executor.subprocess.run") as mock_sub:
+            mock_sub.return_value = MagicMock(stdout="OK", stderr="", returncode=0)
+            executor.run(net, application="dcopflow", iteration=0)
+            cmd_arg = mock_sub.call_args[0][0]
+            assert cmd_arg[0] != "mpirun"
+
+    @pytest.mark.skipif(not _has_test_file, reason="test data not available")
+    def test_mpirun_for_scopflow_with_mpi_np(self, tmp_path: Path):
+        self._make_fake_bin(tmp_path / "bin", "scopflow")
+        exago, output = self._make_config_with_mpi(tmp_path, mpi_np=4)
+        executor = SimulationExecutor(exago, output)
+        net = parse_matpower(ACTIVSG200)
+
+        with patch("llm_sim.engine.executor.subprocess.run") as mock_sub:
+            mock_sub.return_value = MagicMock(stdout="OK", stderr="", returncode=0)
+            executor.run(net, application="scopflow", iteration=0)
+            cmd_arg = mock_sub.call_args[0][0]
+            assert cmd_arg[0] == "mpirun"
+            assert cmd_arg[1] == "-np"
+            assert cmd_arg[2] == "4"
+
+    @pytest.mark.skipif(not _has_test_file, reason="test data not available")
+    def test_no_mpirun_for_scopflow_with_mpi_np_1(self, tmp_path: Path):
+        self._make_fake_bin(tmp_path / "bin", "scopflow")
+        exago, output = self._make_config_with_mpi(tmp_path, mpi_np=1)
+        executor = SimulationExecutor(exago, output)
+        net = parse_matpower(ACTIVSG200)
+
+        with patch("llm_sim.engine.executor.subprocess.run") as mock_sub:
+            mock_sub.return_value = MagicMock(stdout="OK", stderr="", returncode=0)
+            executor.run(net, application="scopflow", iteration=0)
+            cmd_arg = mock_sub.call_args[0][0]
+            assert cmd_arg[0] != "mpirun"
+
+
 class TestExecutorLive:
 
     def test_opflow_run(self, tmp_path: Path):

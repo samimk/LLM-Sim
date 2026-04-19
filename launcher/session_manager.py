@@ -233,6 +233,7 @@ class SessionManager:
                 total_tokens=total_tokens,
                 objective_registry=objective_registry,
                 preference_history=preference_history,
+                application=session.application,
             )
 
             response = backend.complete(system_prompt, user_prompt)

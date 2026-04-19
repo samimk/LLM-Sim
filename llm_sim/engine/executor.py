@@ -47,12 +47,22 @@ def _default_cmd_builder(
     return cmd
 
 
+def _tcopflow_cmd_builder(
+    binary: Path, input_file: Path, extra_args: list[str] | None,
+) -> list[str]:
+    """Build command for TCOPFLOW (includes -save_output for multi-period results)."""
+    cmd = [str(binary), "-netfile", str(input_file), "-print_output", "-save_output"]
+    if extra_args:
+        cmd.extend(extra_args)
+    return cmd
+
+
 _CMD_BUILDERS: dict[str, Callable] = {
     "opflow": _default_cmd_builder,
     "dcopflow": _default_cmd_builder,
     "pflow": _default_cmd_builder,
     "scopflow": _default_cmd_builder,
-    "tcopflow": _default_cmd_builder,
+    "tcopflow": _tcopflow_cmd_builder,
     "sopflow": _default_cmd_builder,
 }
 
@@ -168,7 +178,7 @@ class SimulationExecutor:
         builder = _CMD_BUILDERS.get(application, _default_cmd_builder)
         cmd = builder(binary, input_file, extra_args)
 
-        if self._exago.mpi_np > 1:
+        if self._exago.mpi_np > 1 and application == "scopflow":
             cmd = ["mpirun", "-np", str(self._exago.mpi_np)] + cmd
 
         # 5/6. Execute

@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Optional
 
-from llm_sim.parsers.opflow_parser import parse_opflow_output, _is_marginal_exit
+from llm_sim.parsers.opflow_parser import parse_opflow_output, _is_marginal_exit, _is_near_boundary
 from llm_sim.parsers.opflow_results import OPFLOWResult
 
 logger = logging.getLogger("llm_sim.parsers.scopflow")
@@ -80,8 +80,12 @@ def parse_scopflow_output(
         result.feasibility_detail = "infeasible"
         result.converged = False
     elif result.convergence_status in ("DID", "DID NOT CONVERGE", "DIVERGED"):
-        # IPOPT didn't converge — check if it's marginal or infeasible
         if result.ipopt_exit_status and _is_marginal_exit(result.ipopt_exit_status):
+            result.feasibility_detail = "marginal"
+        elif _is_near_boundary(
+            result.buses, result.branches, bus_limits,
+            result.max_line_loading_pct, result.losses_mw, result.total_load_mw,
+        ):
             result.feasibility_detail = "marginal"
         else:
             result.feasibility_detail = "infeasible"

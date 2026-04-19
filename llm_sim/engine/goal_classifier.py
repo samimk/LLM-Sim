@@ -16,7 +16,8 @@ logger = logging.getLogger("llm_sim.engine.goal_classifier")
 
 _SYSTEM_PROMPT = (
     "You are an expert power systems analyst reviewing the results of an "
-    "LLM-driven optimization search performed using ExaGO's OPFLOW application. "
+    "LLM-driven optimization search performed using an ExaGO application "
+    "(OPFLOW, DCOPFLOW, SCOPFLOW, or TCOPFLOW). "
     "Provide a structured analytical summary of the search."
 )
 
@@ -43,6 +44,7 @@ def build_classification_prompts(
     total_tokens: int,
     objective_registry: list[dict] | None = None,
     preference_history: list[dict] | None = None,
+    application: str = "opflow",
 ) -> tuple[str, str]:
     """Build the (system_prompt, user_prompt) pair for post-search goal classification.
 
@@ -56,10 +58,29 @@ def build_classification_prompts(
         stats: dict from ``SearchJournal.summary_stats()`` (before any override).
         journal_formatted: Output of ``SearchJournal.format_detailed()``.
         total_tokens: Total prompt + completion tokens used during the search.
+        application: ExaGO application name (e.g., "opflow", "tcopflow").
 
     Returns:
         Tuple of (system_prompt, user_prompt) strings.
     """
+    system_prompt = _SYSTEM_PROMPT
+    _APP_CONTEXT = {
+        "tcopflow": (
+            "This search used TCOPFLOW (Multi-Period Optimal Power Flow). "
+            "TCOPFLOW optimizes across multiple time periods with generator "
+            "ramp constraints. The objective is total cost across all periods. "
+            "When identifying the best iteration, consider temporal aspects: "
+            "the worst-case period determines overall feasibility, and "
+            "feasibility_boundary searches should consider the temporal horizon."
+        ),
+        "scopflow": (
+            "This search used SCOPFLOW (Security-Constrained OPF). Results "
+            "reflect base-case N-1 security analysis."
+        ),
+    }
+    app_context = _APP_CONTEXT.get(application)
+    if app_context:
+        system_prompt = system_prompt + " " + app_context
     user_prompt = (
         f"Search goal: {goal}\n"
         f"Termination reason: {termination_reason}\n"
@@ -123,7 +144,7 @@ def build_classification_prompts(
         f"\n"
         f"{_GOAL_TYPE_DEFS}"
     )
-    return _SYSTEM_PROMPT, user_prompt
+    return system_prompt, user_prompt
 
 
 def parse_goal_classification(

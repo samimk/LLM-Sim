@@ -49,6 +49,12 @@ DEFAULTS: dict[str, Any] = {
         "base_case": None,
         "gic_file": None,
         "ctgc_file": None,
+        "pload_profile": None,
+        "qload_profile": None,
+        "wind_profile": None,
+        "tcopflow_duration": 1.0,
+        "tcopflow_dT": 60.0,
+        "tcopflow_iscoupling": 1,
         "application": "opflow",
         "search_mode": "standard",
     },
@@ -107,6 +113,12 @@ class SearchConfig:
     application: str
     search_mode: str = "standard"  # "standard" or "stress_test"
     ctgc_file: Optional[Path] = None  # Contingency file for SCOPFLOW
+    pload_profile: Optional[Path] = None  # Active load profile for TCOPFLOW
+    qload_profile: Optional[Path] = None  # Reactive load profile for TCOPFLOW
+    wind_profile: Optional[Path] = None  # Wind generation profile for TCOPFLOW
+    tcopflow_duration: float = 1.0  # Duration in hours for TCOPFLOW
+    tcopflow_dT: float = 60.0  # Time-step in minutes for TCOPFLOW
+    tcopflow_iscoupling: int = 1  # Ramp coupling (0=off, 1=on) for TCOPFLOW
 
 
 @dataclass(frozen=True)
@@ -234,7 +246,7 @@ def load_config(
 
     llm = _build_section(LLMConfig, merged["llm"], config_root, set())
 
-    search_path_fields = {"base_case", "gic_file", "ctgc_file"}
+    search_path_fields = {"base_case", "gic_file", "ctgc_file", "pload_profile", "qload_profile", "wind_profile"}
     search = _build_section(SearchConfig, merged["search"], config_root, search_path_fields)
 
     output = _build_section(OutputConfig, merged["output"], config_root, {"workdir", "logs_dir"})
@@ -283,3 +295,35 @@ def _validate(cfg: AppConfig) -> None:
         logger.warning(
             "Contingency file does not exist: %s", cfg.search.ctgc_file
         )
+
+    if cfg.exago.mpi_np > 1 and cfg.search.application != "scopflow":
+        logger.warning(
+            "mpi_np=%d is set but application '%s' only supports single-core "
+            "IPOPT execution. mpi_np will be ignored. "
+            "Only SCOPFLOW supports multi-core via EMPAR.",
+            cfg.exago.mpi_np, cfg.search.application,
+        )
+
+    if cfg.search.application == "tcopflow":
+        if cfg.search.pload_profile is None:
+            logger.warning(
+                "TCOPFLOW requires an active load profile (-tcopflow_ploadprofile). "
+                "Set search.pload_profile in config or use --pload-profile on the CLI."
+            )
+        if cfg.search.qload_profile is None:
+            logger.warning(
+                "TCOPFLOW requires a reactive load profile (-tcopflow_qloadprofile). "
+                "Set search.qload_profile in config or use --qload-profile on the CLI."
+            )
+        if cfg.search.pload_profile is not None and not cfg.search.pload_profile.exists():
+            logger.warning(
+                "Active load profile does not exist: %s", cfg.search.pload_profile
+            )
+        if cfg.search.qload_profile is not None and not cfg.search.qload_profile.exists():
+            logger.warning(
+                "Reactive load profile does not exist: %s", cfg.search.qload_profile
+            )
+        if cfg.search.wind_profile is not None and not cfg.search.wind_profile.exists():
+            logger.warning(
+                "Wind generation profile does not exist: %s", cfg.search.wind_profile
+            )

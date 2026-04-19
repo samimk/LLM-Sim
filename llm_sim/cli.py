@@ -83,10 +83,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to .cont contingency file (required for SCOPFLOW)",
     )
     parser.add_argument(
+        "--pload-profile",
+        dest="pload_profile",
+        help="Path to active load profile CSV (required for TCOPFLOW)",
+    )
+    parser.add_argument(
+        "--qload-profile",
+        dest="qload_profile",
+        help="Path to reactive load profile CSV (required for TCOPFLOW)",
+    )
+    parser.add_argument(
+        "--wind-profile",
+        dest="wind_profile",
+        help="Path to wind generation profile CSV (optional, TCOPFLOW only)",
+    )
+    parser.add_argument(
+        "--tcopflow-duration",
+        dest="tcopflow_duration",
+        type=float,
+        help="TCOPFLOW duration in hours (default: 1.0)",
+    )
+    parser.add_argument(
+        "--tcopflow-dt",
+        dest="tcopflow_dT",
+        type=float,
+        help="TCOPFLOW time-step in minutes (default: 60)",
+    )
+    parser.add_argument(
+        "--tcopflow-iscoupling",
+        dest="tcopflow_iscoupling",
+        type=int,
+        choices=[0, 1],
+        help="TCOPFLOW generator ramp coupling: 1=on (default), 0=off",
+    )
+    parser.add_argument(
         "--np",
         dest="mpi_np",
         type=int,
-        help="Number of MPI processes for ExaGO (default: 1)",
+        help="Number of MPI processes for ExaGO (default: 1). Only SCOPFLOW supports multi-core via EMPAR.",
     )
     parser.add_argument(
         "--verbose",
@@ -140,6 +174,18 @@ def _cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
         overrides["search.gic_file"] = args.gic_file
     if args.ctgc_file is not None:
         overrides["search.ctgc_file"] = args.ctgc_file
+    if getattr(args, "pload_profile", None) is not None:
+        overrides["search.pload_profile"] = args.pload_profile
+    if getattr(args, "qload_profile", None) is not None:
+        overrides["search.qload_profile"] = args.qload_profile
+    if getattr(args, "wind_profile", None) is not None:
+        overrides["search.wind_profile"] = args.wind_profile
+    if getattr(args, "tcopflow_duration", None) is not None:
+        overrides["search.tcopflow_duration"] = args.tcopflow_duration
+    if getattr(args, "tcopflow_dT", None) is not None:
+        overrides["search.tcopflow_dT"] = args.tcopflow_dT
+    if getattr(args, "tcopflow_iscoupling", None) is not None:
+        overrides["search.tcopflow_iscoupling"] = args.tcopflow_iscoupling
     if args.mpi_np is not None:
         overrides["exago.mpi_np"] = args.mpi_np
     if args.search_mode is not None:

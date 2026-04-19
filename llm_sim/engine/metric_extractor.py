@@ -69,6 +69,8 @@ def available_metrics_for_app(application: str) -> list[str]:
     all_metrics = list(_EXTRACTORS.keys())
     if application == "dcopflow":
         return [m for m in all_metrics if m not in _DC_EXCLUDED_METRICS]
+    if application == "tcopflow":
+        return all_metrics
     return all_metrics
 
 

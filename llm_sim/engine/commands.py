@@ -108,10 +108,23 @@ class SetAllBusVLimits:
     Vmax: Optional[float] = None
 
 
+@dataclass
+class ScaleLoadProfile:
+    """Scale per-period load profile values by a factor (TCOPFLOW only).
+
+    Multiplies all numeric values in both P and Q load profile CSV files
+    by the given factor. The Timestamp column is preserved. This is the
+    correct mechanism for adjusting demand in TCOPFLOW, since TCOPFLOW
+    reads per-period loads from profile files, not the .m case file.
+    """
+
+    factor: float
+
+
 ModCommand = Union[
     SetLoad, ScaleLoad, ScaleAllLoads, SetGenStatus, SetGenDispatch,
     SetGenVoltage, SetBranchStatus, SetBranchRate, SetCostCoeffs,
-    SetBusVLimits, SetAllBusVLimits,
+    SetBusVLimits, SetAllBusVLimits, ScaleLoadProfile,
 ]
 
 # Map action names to command classes and their required fields
@@ -127,6 +140,7 @@ _COMMAND_MAP: dict[str, tuple[type, set[str]]] = {
     "set_cost_coeffs": (SetCostCoeffs, {"bus", "coeffs"}),
     "set_bus_vlimits": (SetBusVLimits, {"bus"}),
     "set_all_bus_vlimits": (SetAllBusVLimits, set()),
+    "scale_load_profile": (ScaleLoadProfile, {"factor"}),
 }
 
 

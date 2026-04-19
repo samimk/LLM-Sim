@@ -42,6 +42,15 @@ search:
   base_case: null               # path to .m file
   gic_file: null                # path to .gic file (optional)
   application: "opflow"         # opflow | scopflow | tcopflow | sopflow | dcopflow | pflow
+  # SCOPFLOW-specific
+  ctgc_file: null               # contingency file (.cont) for SCOPFLOW
+  # TCOPFLOW-specific
+  pload_profile: null           # active load profile CSV for TCOPFLOW
+  qload_profile: null           # reactive load profile CSV for TCOPFLOW
+  wind_profile: null            # wind generation profile CSV for TCOPFLOW (optional)
+  tcopflow_duration: 1.0        # duration in hours (default: 1.0)
+  tcopflow_dT: 60.0             # time-step in minutes (default: 60)
+  tcopflow_iscoupling: 1        # generator ramp coupling: 1=on, 0=off
 
 # Output settings
 output:

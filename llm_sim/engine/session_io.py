@@ -37,6 +37,10 @@ def save_session(
     termination_reason: str = "paused",
     enforced_vmin: float | None = None,
     enforced_vmax: float | None = None,
+    tcopflow_period_data: list[dict] | None = None,
+    tcopflow_dT_min: float = 0.0,
+    tcopflow_duration_min: float = 0.0,
+    tcopflow_is_coupling: bool = True,
 ) -> Path:
     """Save a search session to disk for later resumption.
 
@@ -85,6 +89,10 @@ def save_session(
         "current_network_file": network_file,
         "steering_history": steering_history,
         "active_steering_directives": active_steering_directives,
+        "tcopflow_period_data": tcopflow_period_data,
+        "tcopflow_dT_min": tcopflow_dT_min,
+        "tcopflow_duration_min": tcopflow_duration_min,
+        "tcopflow_is_coupling": tcopflow_is_coupling,
         "journal": {
             "entries": [asdict(e) for e in journal.entries],
             "objective_registry": journal.objective_registry.to_dict_list(),
@@ -155,6 +163,7 @@ def load_session(save_dir: Path) -> dict[str, Any]:
             tracked_metrics=entry_data.get("tracked_metrics"),
             feasibility_detail=entry_data.get("feasibility_detail", ""),
             solver=entry_data.get("solver", ""),
+            num_steps=entry_data.get("num_steps", 0),
         )
         journal_entries.append(entry)
 
@@ -198,4 +207,8 @@ def load_session(save_dir: Path) -> dict[str, Any]:
         "enforced_vmin": raw.get("enforced_vmin"),
         "enforced_vmax": raw.get("enforced_vmax"),
         "termination_reason": raw.get("termination_reason", "paused"),
+        "tcopflow_period_data": raw.get("tcopflow_period_data"),
+        "tcopflow_dT_min": raw.get("tcopflow_dT_min", 0.0),
+        "tcopflow_duration_min": raw.get("tcopflow_duration_min", 0.0),
+        "tcopflow_is_coupling": raw.get("tcopflow_is_coupling", True),
     }

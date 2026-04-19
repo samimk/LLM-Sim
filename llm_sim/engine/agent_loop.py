@@ -67,6 +67,10 @@ class SearchSession:
     enforced_vmax: Optional[float] = None
     objective_registry_data: Optional[list[dict]] = None
     preference_history: Optional[list[dict]] = None
+    tcopflow_period_data: Optional[list[dict]] = None
+    tcopflow_dT_min: float = 0.0
+    tcopflow_duration_min: float = 0.0
+    tcopflow_is_coupling: bool = True
 
 
 class AgentLoopController:
@@ -111,6 +115,12 @@ class AgentLoopController:
         self._total_completion_tokens = 0
         self._opflow_results_cache: dict[int, OPFLOWResult] = {}
         self._scopflow_num_contingencies: int = 0
+        self._tcopflow_num_steps: int = 0
+        self._tcopflow_duration_min: float = 0.0
+        self._tcopflow_dT_min: float = 0.0
+        self._tcopflow_is_coupling: bool = True
+        self._tcopflow_period_data: list[dict] = []
+        self._tcopflow_profile_overrides: dict[str, Path] = {}
 
     # ------------------------------------------------------------------
     # Output helper
@@ -175,6 +185,25 @@ class AgentLoopController:
             if self._config.exago.mpi_np > 1:
                 args.extend(["-scopflow_solver", "EMPAR"])
 
+        if app == "tcopflow":
+            pload = self._tcopflow_profile_overrides.get("pload_profile") or self._config.search.pload_profile
+            qload = self._tcopflow_profile_overrides.get("qload_profile") or self._config.search.qload_profile
+            if pload:
+                args.extend(["-tcopflow_ploadprofile", str(pload)])
+            if qload:
+                args.extend(["-tcopflow_qloadprofile", str(qload)])
+            if self._config.search.wind_profile:
+                args.extend(["-tcopflow_windgenprofile", str(self._config.search.wind_profile)])
+            dT = self._config.search.tcopflow_dT
+            if dT != 60.0:
+                args.extend(["-tcopflow_dT", str(dT)])
+            duration = self._config.search.tcopflow_duration
+            if duration != 1.0:
+                args.extend(["-tcopflow_duration", str(duration)])
+            iscoupling = self._config.search.tcopflow_iscoupling
+            if iscoupling != 1:
+                args.extend(["-tcopflow_iscoupling", str(iscoupling)])
+
         if self._config.search.gic_file:
             args.extend(["-gicfile", str(self._config.search.gic_file)])
 
@@ -228,6 +257,17 @@ class AgentLoopController:
             if meta:
                 self._scopflow_num_contingencies = meta.get("num_contingencies", 0)
 
+        # Extract TCOPFLOW metadata and period files once from base case
+        if self._config.search.application == "tcopflow" and sim_result.success:
+            from llm_sim.parsers import parse_tcopflow_metadata, parse_tcopflow_period_files
+            meta = parse_tcopflow_metadata(sim_result)
+            if meta:
+                self._tcopflow_num_steps = meta.get("num_steps", 0)
+                self._tcopflow_duration_min = meta.get("duration_min", 0.0)
+                self._tcopflow_dT_min = meta.get("dT_min", 0.0)
+                self._tcopflow_is_coupling = meta.get("num_coupling_constraints", 0) > 0
+            self._tcopflow_period_data = parse_tcopflow_period_files(sim_result.workdir)
+
         opflow = parse_simulation_result_for_app(
             sim_result,
             application=self._config.search.application,
@@ -240,6 +280,11 @@ class AgentLoopController:
                 opflow,
                 self._config.search.application,
                 num_contingencies=self._scopflow_num_contingencies,
+                num_steps=self._tcopflow_num_steps,
+                duration_min=self._tcopflow_duration_min,
+                dT_min=self._tcopflow_dT_min,
+                is_coupling=self._tcopflow_is_coupling,
+                period_data=self._tcopflow_period_data if self._tcopflow_period_data else None,
             )
             self._base_opflow_result = opflow
             self._opflow_results_cache[0] = opflow
@@ -251,6 +296,7 @@ class AgentLoopController:
                 sim_elapsed=sim_result.elapsed_seconds,
                 llm_reasoning="Baseline run",
                 mode="fresh",
+                num_steps=self._tcopflow_num_steps,
             )
             self._print(
                 f"[Iter 0] Base case: {opflow.convergence_status}, "
@@ -266,6 +312,7 @@ class AgentLoopController:
                 sim_elapsed=sim_result.elapsed_seconds,
                 llm_reasoning="Baseline run",
                 mode="fresh",
+                num_steps=self._tcopflow_num_steps,
             )
             self._error_feedback = (
                 f"Base case simulation failed: {sim_result.error_message or 'unknown error'}"
@@ -465,6 +512,7 @@ class AgentLoopController:
         # Choose base network for modifications
         if mode == "fresh":
             base_net = self._base_network
+            self._tcopflow_profile_overrides = {}
         else:
             base_net = self._current_network
 
@@ -479,9 +527,21 @@ class AgentLoopController:
                 parse_errors.append(f"Invalid command {raw}: {exc}")
 
         if commands:
+            # Build TCOPFLOW profile args for modifier
+            _tcopflow_mod_kwargs = {}
+            if self._config.search.application == "tcopflow":
+                _tcopflow_mod_kwargs = {
+                    "pload_profile": self._tcopflow_profile_overrides.get("pload_profile") or self._config.search.pload_profile,
+                    "qload_profile": self._tcopflow_profile_overrides.get("qload_profile") or self._config.search.qload_profile,
+                    "profile_output_dir": self._config.output.workdir / f"profiles_iter_{iteration:03d}",
+                }
             modified_net, report = apply_modifications(
-                base_net, commands, application=self._config.search.application
+                base_net, commands, application=self._config.search.application,
+                **_tcopflow_mod_kwargs,
             )
+            # Store profile overrides from modifier for subsequent iterations
+            if report.profile_paths:
+                self._tcopflow_profile_overrides.update(report.profile_paths)
             skipped_msgs = []
             for cmd, reasons in report.skipped:
                 skipped_msgs.append(f"Skipped {cmd}: {'; '.join(reasons)}")
@@ -533,11 +593,21 @@ class AgentLoopController:
         if opflow is not None:
             self._opflow_results_cache[iteration] = opflow
 
+        # Parse TCOPFLOW period files after simulation
+        if self._config.search.application == "tcopflow" and opflow is not None and sim_result.success:
+            from llm_sim.parsers import parse_tcopflow_period_files
+            self._tcopflow_period_data = parse_tcopflow_period_files(sim_result.workdir)
+
         if opflow is not None:
             self._latest_results_text = results_summary_for_app(
                 opflow,
                 self._config.search.application,
                 num_contingencies=self._scopflow_num_contingencies,
+                num_steps=self._tcopflow_num_steps,
+                duration_min=self._tcopflow_duration_min,
+                dT_min=self._tcopflow_dT_min,
+                is_coupling=self._tcopflow_is_coupling,
+                period_data=self._tcopflow_period_data if self._tcopflow_period_data else None,
             )
             self._current_network = modified_net
             self._print(
@@ -593,6 +663,7 @@ class AgentLoopController:
             llm_reasoning=reasoning,
             mode=mode,
             steering_directive=active_directive,
+            num_steps=self._tcopflow_num_steps,
         )
 
         # Extract tracked metrics for multi-objective tracking
@@ -652,8 +723,31 @@ class AgentLoopController:
         q = query.lower()
 
         _dcopflow = self._config.search.application == "dcopflow"
+        _tcopflow = self._config.search.application == "tcopflow"
 
-        # ── Voltage threshold queries ────────────────────────────────────
+        # ── TCOPFLOW time-period queries ──────────────────────────────────
+        if _tcopflow and ("period" in q or "time step" in q or "timestep" in q or "temporal" in q):
+            if not self._tcopflow_period_data:
+                return "No per-period data available. Run a simulation first."
+            lines = [f"Multi-period summary ({len(self._tcopflow_period_data)} periods):"]
+            lines.append(
+                f"{'Period':>6} | {'Load(MW)':>9} | {'Gen(MW)':>9} | "
+                f"{'Vmin(pu)':>8} | {'Vmax(pu)':>8} | {'MaxLoad%':>8}"
+            )
+            lines.append("-" * 62)
+            for p in self._tcopflow_period_data:
+                lines.append(
+                    f"{p['period']:>6} | {p['total_load_mw']:>9.1f} | "
+                    f"{p['total_gen_mw']:>9.1f} | {p['voltage_min']:>8.3f} | "
+                    f"{p['voltage_max']:>8.3f} | {p['max_line_loading_pct']:>7.1f}%"
+                )
+            peak = max(self._tcopflow_period_data, key=lambda p: p["total_load_mw"])
+            worst_v = min(self._tcopflow_period_data, key=lambda p: p["voltage_min"])
+            worst_load = max(self._tcopflow_period_data, key=lambda p: p["max_line_loading_pct"])
+            lines.append(f"\nPeak load: period {peak['period']} ({peak['total_load_mw']:.1f} MW)")
+            lines.append(f"Worst voltage: period {worst_v['period']} (Vmin={worst_v['voltage_min']:.3f} pu)")
+            lines.append(f"Worst line loading: period {worst_load['period']} ({worst_load['max_line_loading_pct']:.1f}%)")
+            return "\n".join(lines)
         m = re.search(r"voltage\s+below\s+([\d.]+)", q)
         if m:
             if _dcopflow:
@@ -1015,6 +1109,7 @@ class AgentLoopController:
                 total_tokens=total_tokens,
                 objective_registry=self._journal.objective_registry.to_dict_list(),
                 preference_history=self._journal.objective_registry.history,
+                application=self._config.search.application,
             )
             response = self._backend.complete(sys_prompt, user_prompt)
             analysis_text = response.raw_text
@@ -1040,6 +1135,10 @@ class AgentLoopController:
         session.analysis_text = analysis_text
         session.objective_registry_data = self._journal.objective_registry.to_dict_list()
         session.preference_history = self._journal.objective_registry.history
+        session.tcopflow_period_data = self._tcopflow_period_data if self._tcopflow_period_data else None
+        session.tcopflow_dT_min = self._tcopflow_dT_min
+        session.tcopflow_duration_min = self._tcopflow_duration_min
+        session.tcopflow_is_coupling = self._tcopflow_is_coupling
 
         # Always print the final summary (even in quiet mode)
         print()
@@ -1175,6 +1274,18 @@ class AgentLoopController:
         self._steering_history = saved["steering_history"]
         self._active_steering_directives = saved["active_steering_directives"]
 
+        # Restore TCOPFLOW period data
+        self._tcopflow_period_data = saved.get("tcopflow_period_data") or []
+        self._tcopflow_dT_min = saved.get("tcopflow_dT_min", 0.0)
+        self._tcopflow_duration_min = saved.get("tcopflow_duration_min", 0.0)
+        self._tcopflow_is_coupling = saved.get("tcopflow_is_coupling", True)
+        if self._tcopflow_period_data:
+            self._tcopflow_num_steps = max(len(self._tcopflow_period_data), 0)
+        else:
+            self._tcopflow_num_steps = max(
+                (e.num_steps for e in saved["journal_entries"] if e.num_steps > 0), default=0
+            )
+
         # Restore token counts
         self._total_prompt_tokens = saved["total_prompt_tokens"]
         self._total_completion_tokens = saved["total_completion_tokens"]
@@ -1305,4 +1416,8 @@ class AgentLoopController:
             last_iteration=last_iteration,
             enforced_vmin=enforced_vmin,
             enforced_vmax=enforced_vmax,
+            tcopflow_period_data=self._tcopflow_period_data if self._tcopflow_period_data else None,
+            tcopflow_dT_min=self._tcopflow_dT_min,
+            tcopflow_duration_min=self._tcopflow_duration_min,
+            tcopflow_is_coupling=self._tcopflow_is_coupling,
         )

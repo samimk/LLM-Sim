@@ -34,6 +34,36 @@ _GEN_HEADER_RE = re.compile(r"^Gen\s+Status\s+Fuel", re.MULTILINE)
 _SEPARATOR_RE = re.compile(r"^-{10,}", re.MULTILINE)
 
 
+_VOLTAGE_PROXIMITY_PU = 0.01
+_LINE_LOADING_PROXIMITY_PCT = 5.0
+
+
+def _is_near_boundary(
+    buses: list[BusResult],
+    branches: list[BranchResult],
+    bus_limits: dict[int, tuple[float, float]] | None,
+    max_line_loading_pct: float,
+    losses_mw: float,
+    total_load_mw: float,
+) -> bool:
+    """Check if a non-converged solution's metrics are near their limits."""
+    if losses_mw < 0 and total_load_mw > 0:
+        return False
+
+    if bus_limits:
+        for b in buses:
+            if b.bus_id in bus_limits:
+                vmin, vmax = bus_limits[b.bus_id]
+                if (abs(b.Vm - vmin) <= _VOLTAGE_PROXIMITY_PU
+                        or abs(b.Vm - vmax) <= _VOLTAGE_PROXIMITY_PU):
+                    return True
+
+    if max_line_loading_pct >= (100.0 - _LINE_LOADING_PROXIMITY_PCT):
+        return True
+
+    return False
+
+
 def _parse_table_rows(text: str, start_pos: int) -> list[list[str]]:
     """Extract data rows between separator lines starting at *start_pos*.
 
@@ -258,12 +288,15 @@ def parse_opflow_output(
     elif has_power_balance_violation:
         feasibility_detail = "infeasible"
     elif converged:
-        # Converged but has structural violations (unusual but possible)
         feasibility_detail = "infeasible"
     elif _is_marginal_exit(ipopt_exit_status):
         feasibility_detail = "marginal"
+    elif _is_near_boundary(
+        buses, branches, bus_limits,
+        max_line_loading_pct, losses_mw, total_load_mw,
+    ):
+        feasibility_detail = "marginal"
     else:
-        # Not converged and no IPOPT exit, or IPOPT indicates infeasibility
         feasibility_detail = "infeasible"
 
     return OPFLOWResult(

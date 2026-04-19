@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import copy
+import csv
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from llm_sim.engine.commands import (
     ModCommand,
     ScaleAllLoads,
     ScaleLoad,
+    ScaleLoadProfile,
     SetAllBusVLimits,
     SetBranchRate,
     SetBranchStatus,
@@ -33,6 +36,7 @@ class ModificationReport:
     applied: list[tuple[ModCommand, str]] = field(default_factory=list)
     skipped: list[tuple[ModCommand, list[str]]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    profile_paths: dict[str, Path] = field(default_factory=dict)
 
 
 def _find_bus(net: MATNetwork, bus_id: int):
@@ -197,10 +201,66 @@ def _dcopflow_voltage_skip_warning(cmd: ModCommand) -> str:
     )
 
 
+_SCALE_LOAD_PROFILE_NON_TCOPFLOW_WARNING = (
+    "scale_load_profile skipped: only applies to TCOPFLOW. "
+    "Use scale_all_loads or scale_load for other applications."
+)
+
+
+def scale_load_profile_csv(
+    csv_path: Path,
+    factor: float,
+    output_dir: Path,
+    suffix: str = "",
+) -> Path:
+    """Scale numeric values in a TCOPFLOW load profile CSV by a factor.
+
+    The first column (Timestamp) is preserved. All other columns are
+    multiplied by *factor*. The result is written to *output_dir* with
+    the same filename.
+
+    Args:
+        csv_path: Path to the original profile CSV.
+        factor: Scaling factor (e.g., 1.2 for +20%).
+        output_dir: Directory to write the scaled CSV.
+        suffix: Optional suffix appended to the filename (e.g., "_scaled").
+
+    Returns:
+        Path to the written scaled CSV file.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = csv_path.stem + suffix
+    out_path = output_dir / f"{stem}.csv"
+
+    rows_out = []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for i, row in enumerate(reader):
+            if i == 0:
+                rows_out.append(row)
+                continue
+            scaled = [row[0]]  # Timestamp column
+            for val in row[1:]:
+                try:
+                    scaled.append(str(float(val) * factor))
+                except ValueError:
+                    scaled.append(val)
+            rows_out.append(scaled)
+
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerows(rows_out)
+
+    return out_path
+
+
 def apply_modifications(
     net: MATNetwork,
     commands: list[ModCommand],
     application: str | None = None,
+    pload_profile: Path | None = None,
+    qload_profile: Path | None = None,
+    profile_output_dir: Path | None = None,
 ) -> tuple[MATNetwork, ModificationReport]:
     """Apply a list of modification commands to a network.
 
@@ -213,14 +273,49 @@ def apply_modifications(
         application: ExaGO application name (e.g. "opflow"). When provided and
             equal to "opflow", a warning is added for any SetGenVoltage commands
             because OPFLOW treats Vg as an initial guess, not a constraint.
+        pload_profile: Path to active load profile CSV (required for ScaleLoadProfile).
+        qload_profile: Path to reactive load profile CSV (required for ScaleLoadProfile).
+        profile_output_dir: Directory for scaled profile output (required for ScaleLoadProfile).
 
     Returns:
-        Tuple of (modified_network, report).
+        Tuple of (modified_network, report). The report.profile_paths dict
+        contains "pload_profile" and "qload_profile" keys with paths to
+        scaled profile files when ScaleLoadProfile was applied.
     """
     modified = copy.deepcopy(net)
     report = ModificationReport()
 
     for cmd in commands:
+        # Handle ScaleLoadProfile separately — it modifies CSV files, not the network
+        if isinstance(cmd, ScaleLoadProfile):
+            if application != "tcopflow":
+                report.warnings.append(_SCALE_LOAD_PROFILE_NON_TCOPFLOW_WARNING)
+                logger.warning(_SCALE_LOAD_PROFILE_NON_TCOPFLOW_WARNING)
+                report.skipped.append((cmd, ["Only applicable for TCOPFLOW"]))
+                continue
+            if pload_profile is None or qload_profile is None:
+                err = "ScaleLoadProfile requires pload_profile and qload_profile paths"
+                report.skipped.append((cmd, [err]))
+                logger.warning(err)
+                continue
+            out_dir = profile_output_dir or pload_profile.parent
+            effective_factor = cmd.factor
+            # If profiles were already scaled, apply factor cumulatively
+            if report.profile_paths.get("pload_profile"):
+                base_p = report.profile_paths["pload_profile"]
+                base_q = report.profile_paths["qload_profile"]
+            else:
+                base_p = pload_profile
+                base_q = qload_profile
+            scaled_p = scale_load_profile_csv(base_p, effective_factor, out_dir)
+            scaled_q = scale_load_profile_csv(base_q, effective_factor, out_dir)
+            report.profile_paths["pload_profile"] = scaled_p
+            report.profile_paths["qload_profile"] = scaled_q
+            desc = f"Scaled load profiles by factor {cmd.factor} (P: {scaled_p.name}, Q: {scaled_q.name})"
+            report.applied.append((cmd, desc))
+            logger.info("Applied: %s", desc)
+            continue
+
         # Skip voltage commands entirely for DCOPFLOW (they have no effect)
         if application == "dcopflow" and isinstance(cmd, _DCOPFLOW_VOLTAGE_CMD_TYPES):
             warning = _dcopflow_voltage_skip_warning(cmd)

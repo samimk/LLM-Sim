@@ -22,7 +22,8 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from config_builder import (
-    scan_data_files, scan_contingency_files, load_example_goals,
+    scan_data_files, scan_contingency_files, scan_profile_files,
+    match_profiles_for_case, load_example_goals,
     build_config_overrides, get_default_config_path, get_project_root,
     DEFAULT_MODELS, BACKENDS, APPLICATIONS, FUTURE_APPLICATIONS, MODES,
     SEARCH_MODES,
@@ -96,7 +97,9 @@ def get_network_info(file_path: str) -> dict:
 
 def start_search(base_case_path, goal, backend, model, temperature,
                  application, mode, max_iterations, search_mode="standard",
-                 ctgc_file=None, mpi_np=1):
+                 ctgc_file=None, mpi_np=1,
+                 pload_profile=None, qload_profile=None, wind_profile=None,
+                 tcopflow_duration=1.0, tcopflow_dT=60.0, tcopflow_iscoupling=1):
     """Initialize and start a new search."""
     # Validate base case still exists
     if not Path(base_case_path).exists():
@@ -122,6 +125,12 @@ def start_search(base_case_path, goal, backend, model, temperature,
         search_mode=search_mode,
         ctgc_file=ctgc_file,
         mpi_np=mpi_np,
+        pload_profile=pload_profile,
+        qload_profile=qload_profile,
+        wind_profile=wind_profile,
+        tcopflow_duration=tcopflow_duration,
+        tcopflow_dT=tcopflow_dT,
+        tcopflow_iscoupling=tcopflow_iscoupling,
     )
 
     if st.session_state.session_manager is None:
@@ -222,6 +231,96 @@ def render_sidebar() -> dict:
                     "SCOPFLOW requires a contingency file."
                 )
 
+        # Load profile selectors (TCOPFLOW only)
+        pload_profile = None
+        qload_profile = None
+        wind_profile = None
+        tcopflow_duration = 1.0
+        tcopflow_dT = 60.0
+        tcopflow_iscoupling = 1
+        if application == "tcopflow":
+            # Auto-match profiles to selected base case
+            profile_matches = (
+                match_profiles_for_case(selected_file)
+                if selected_file else {"pload": [], "qload": []}
+            )
+            p_matches = profile_matches["pload"]
+            q_matches = profile_matches["qload"]
+
+            if p_matches:
+                p_names = [f.name for f in p_matches]
+                p_idx = st.selectbox(
+                    "Active load profile (P)",
+                    range(len(p_matches)),
+                    format_func=lambda i: p_names[i],
+                    disabled=disabled,
+                )
+                pload_profile = p_matches[p_idx]
+                st.caption(f"`{pload_profile}`")
+            else:
+                st.warning(
+                    "No *_load_P.csv files found in data/ directory. "
+                    "TCOPFLOW requires an active load profile."
+                )
+
+            if q_matches:
+                q_names = [f.name for f in q_matches]
+                q_idx = st.selectbox(
+                    "Reactive load profile (Q)",
+                    range(len(q_matches)),
+                    format_func=lambda i: q_names[i],
+                    disabled=disabled,
+                )
+                qload_profile = q_matches[q_idx]
+                st.caption(f"`{qload_profile}`")
+            else:
+                st.warning(
+                    "No *_load_Q.csv files found in data/ directory. "
+                    "TCOPFLOW requires a reactive load profile."
+                )
+
+            # Optional wind profile
+            all_profiles = scan_profile_files()
+            wind_profiles = [p for p in all_profiles if "wind" in p.name.lower()]
+            if wind_profiles:
+                wind_names = [f.name for f in wind_profiles]
+                wind_idx = st.selectbox(
+                    "Wind generation profile (optional)",
+                    range(len(wind_profiles) + 1),
+                    format_func=lambda i: "None" if i == 0 else wind_names[i - 1],
+                    disabled=disabled,
+                )
+                if wind_idx > 0:
+                    wind_profile = wind_profiles[wind_idx - 1]
+
+            # Temporal parameters
+            st.subheader("⏱️ Temporal Parameters")
+            tcopflow_duration = st.number_input(
+                "Duration (hours)",
+                min_value=0.1,
+                max_value=168.0,
+                value=1.0,
+                step=0.5,
+                disabled=disabled,
+                help="Total time horizon for TCOPFLOW (default: 1.0 hour).",
+            )
+            tcopflow_dT = st.number_input(
+                "Time-step (minutes)",
+                min_value=1.0,
+                max_value=1440.0,
+                value=60.0,
+                step=5.0,
+                disabled=disabled,
+                help="Time-step size for each period (default: 60 min).",
+            )
+            tcopflow_iscoupling = st.selectbox(
+                "Generator ramp coupling",
+                [1, 0],
+                format_func=lambda x: "Enabled" if x == 1 else "Disabled",
+                disabled=disabled,
+                help="When enabled, generator ramp limits are enforced between periods.",
+            )
+
         mode = st.selectbox("Mode", MODES, disabled=disabled)
         search_mode = st.selectbox(
             "Search Mode", SEARCH_MODES, disabled=disabled,
@@ -230,14 +329,19 @@ def render_sidebar() -> dict:
         max_iterations = st.slider(
             "Max iterations", 1, 50, 20, disabled=disabled,
         )
+        mpi_disabled = disabled or application != "scopflow"
         mpi_np = st.number_input(
             "MPI processes",
             min_value=1,
             max_value=64,
             value=1,
-            disabled=disabled,
-            help="Number of MPI processes for ExaGO (default: 1). For SCOPFLOW with mpi_np > 1, uses EMPAR solver.",
+            disabled=mpi_disabled,
+            help="Number of MPI processes for ExaGO (default: 1). "
+            "Only SCOPFLOW supports multi-core execution via EMPAR solver. "
+            "OPFLOW, DCOPFLOW, and TCOPFLOW use IPOPT on a single core only.",
         )
+        if application != "scopflow":
+            mpi_np = 1
 
         # ── Search Goal ──────────────────────────────────────────────────
         st.header("🎯 Search Goal")
@@ -291,6 +395,12 @@ def render_sidebar() -> dict:
                 search_mode=search_mode,
                 ctgc_file=ctgc_file,
                 mpi_np=mpi_np,
+                pload_profile=pload_profile,
+                qload_profile=qload_profile,
+                wind_profile=wind_profile,
+                tcopflow_duration=tcopflow_duration,
+                tcopflow_dT=tcopflow_dT,
+                tcopflow_iscoupling=tcopflow_iscoupling,
             )
             st.rerun()
 

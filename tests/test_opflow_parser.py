@@ -426,3 +426,65 @@ class TestIPOPTExitStatus:
         # Strip trailing whitespace
         assert result.convergence_status.strip() == "DID NOT CONVERGE"
         assert result.feasibility_detail == "marginal"
+
+    def test_near_boundary_voltage_classified_marginal(self):
+        """Non-converged with 'Infeasible Problem Detected' but voltage near limit → marginal."""
+        bus_row = "  1    0.00    0.00    0.00    0.00    0.951    0.00    0.00    0.00    0.00    0.00"
+        output = (
+            "EXIT: Infeasible Problem Detected.\n"
+            "Optimal Power Flow\n"
+            "Convergence status                DID NOT CONVERGE\n"
+            "Objective value                   1000.00\n"
+            "Model                             POWER_BALANCE_POLAR\n"
+            "Solver                            IPOPT\n"
+            "Bus      Pd      Pd      Qd      Qd      Vm      Va      mult_Pmis  mult_Qmis  Pslack  Qslack\n"
+            "------------------------------------------------------------\n"
+            f"{bus_row}\n"
+            "------------------------------------------------------------\n"
+        )
+        bus_limits = {1: (0.95, 1.05)}
+        result = parse_opflow_output(output, bus_limits=bus_limits)
+        assert result.converged is False
+        assert result.feasibility_detail == "marginal"
+
+    def test_near_boundary_line_loading_classified_marginal(self):
+        """Non-converged with line loading near 100% → marginal."""
+        bus_row = "  1    0.00    0.00    0.00    0.00    1.050    0.00    0.00    0.00    0.00    0.00"
+        output = (
+            "EXIT: Infeasible Problem Detected.\n"
+            "Optimal Power Flow\n"
+            "Convergence status                DID NOT CONVERGE\n"
+            "Objective value                   1000.00\n"
+            "Model                             POWER_BALANCE_POLAR\n"
+            "Solver                            IPOPT\n"
+            "Bus      Pd      Pd      Qd      Qd      Vm      Va      mult_Pmis  mult_Qmis  Pslack  Qslack\n"
+            "------------------------------------------------------------\n"
+            f"{bus_row}\n"
+            "------------------------------------------------------------\n"
+            "From     To      Status     Sft      Stf     Slim     mult_Sf  mult_St\n"
+            "------------------------------------------------------------\n"
+            "  1        2         1      95.00    95.00    100.00    0.00   0.00\n"
+            "------------------------------------------------------------\n"
+        )
+        result = parse_opflow_output(output)
+        assert result.converged is False
+        assert result.feasibility_detail == "marginal"
+
+    def test_far_from_boundary_classified_infeasible(self):
+        """Non-converged with metrics far from limits → infeasible."""
+        bus_row = "  1    0.00    0.00    0.00    0.00    0.850    0.00    0.00    0.00    0.00    0.00"
+        output = (
+            "EXIT: Infeasible Problem Detected.\n"
+            "Optimal Power Flow\n"
+            "Convergence status                DID NOT CONVERGE\n"
+            "Objective value                   1000.00\n"
+            "Model                             POWER_BALANCE_POLAR\n"
+            "Solver                            IPOPT\n"
+            "Bus      Pd      Pd      Qd      Qd      Vm      Va      mult_Pmis  mult_Qmis  Pslack  Qslack\n"
+            "------------------------------------------------------------\n"
+            f"{bus_row}\n"
+            "------------------------------------------------------------\n"
+        )
+        result = parse_opflow_output(output)
+        assert result.converged is False
+        assert result.feasibility_detail == "infeasible"

@@ -31,3 +31,12 @@ goals:
 
   - label: "SCOPFLOW: Maximum secure load"
     goal: "Find the maximum uniform load scaling factor before the security-constrained dispatch becomes infeasible. Use binary search with fresh mode. This finds the N-1-secure loadability limit."
+
+  - label: "TCOPFLOW: Maximum temporal loadability"
+    goal: "Find the maximum uniform load profile scaling factor the network can serve across the entire time horizon while keeping all bus voltages within 0.95–1.05 p.u. and all line loadings below 100% in every time period. Use scale_load_profile to adjust demand and fresh mode for binary search. The worst-case period determines overall feasibility."
+
+  - label: "TCOPFLOW: Peak period stress analysis"
+    goal: "Identify the time period with the highest demand and determine whether the system can handle a further 10% increase in load during that peak period only. Scale the load profile by increasing factors and report at what factor the system becomes infeasible. Pay attention to the per-period voltage and loading trends."
+
+  - label: "TCOPFLOW: Ramp constraint impact"
+    goal: "Compare the TCOPFLOW solution with ramp coupling enabled vs disabled to quantify the cost of generator ramp constraints. Run the base case first, then try disabling coupling to see if cost decreases. Report the ramp constraint premium — the additional cost imposed by inter-temporal ramp limits."

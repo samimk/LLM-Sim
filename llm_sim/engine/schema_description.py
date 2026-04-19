@@ -68,11 +68,20 @@ Available modification commands (JSON format):
     Optional: Vmin (float, pu), Vmax (float, pu)
     Example: {"action": "set_bus_vlimits", "bus": 10, "Vmin": 0.95, "Vmax": 1.05}
 
-11. set_all_bus_vlimits — Set voltage limits on ALL buses at once
-    Optional: Vmin (float, pu), Vmax (float, pu) — at least one required
-    Example: {"action": "set_all_bus_vlimits", "Vmin": 0.95, "Vmax": 1.05}
-    This is the preferred way to enforce system-wide voltage constraints in
-    OPFLOW. Much more efficient than issuing set_bus_vlimits for each bus.
+    11. set_all_bus_vlimits — Set voltage limits on ALL buses at once
+     Optional: Vmin (float, pu), Vmax (float, pu) — at least one required
+     Example: {"action": "set_all_bus_vlimits", "Vmin": 0.95, "Vmax": 1.05}
+     This is the preferred way to enforce system-wide voltage constraints in
+     OPFLOW. Much more efficient than issuing set_bus_vlimits for each bus.
+
+ 12. scale_load_profile — Scale per-period load profile values (TCOPFLOW only)
+     Required: factor (float, e.g. 1.2 for +20%)
+     Example: {"action": "scale_load_profile", "factor": 1.2}
+     Multiplies all numeric values in both P and Q load profile CSV files
+     by the given factor. This is the correct way to adjust demand for
+     TCOPFLOW, since TCOPFLOW reads per-period loads from profile files,
+     not the .m case file. Standard load commands (scale_all_loads, set_load)
+     modify the .m file but TCOPFLOW overrides these with profile data.
 
 Return your commands as a JSON object with a "commands" key containing a list:
 {"commands": [{"action": "...", ...}, {"action": "...", ...}]}

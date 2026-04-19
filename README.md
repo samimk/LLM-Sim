@@ -49,7 +49,7 @@ The search journal tracks every iteration, providing the LLM with a history of w
 | **OPFLOW** | AC Optimal Power Flow — full nonlinear OPF with voltage magnitudes, reactive power, and cost optimization | ✅ Fully supported |
 | **DCOPFLOW** | DC Optimal Power Flow — linearized approximation using phase angles and active power only. Faster than OPFLOW, useful for screening and contingency ranking | ✅ Fully supported |
 | **SCOPFLOW** | Security-Constrained OPF — finds a preventive dispatch that survives all contingencies in a `.cont` file. Requires a contingency file | ✅ Fully supported |
-| TCOPFLOW | Multi-Period OPF — time-coupled optimization with load profiles | Planned (Phase 3) |
+| **TCOPFLOW** | Multi-Period OPF — time-coupled optimization with generator ramp constraints and load profiles. Requires P and Q load profile CSV files | ✅ Fully supported |
 | SOPFLOW | Stochastic OPF — optimization under uncertainty with scenario files | Planned (Phase 3) |
 | PFLOW | Power Flow — no optimization, LLM performs the search directly | Planned (Phase 4) |
 
@@ -74,6 +74,20 @@ SCOPFLOW optimizes the base case dispatch so that the network remains feasible e
 - Branch status commands (`set_branch_status`) permanently modify the topology — they do NOT simulate contingencies (the `.cont` file handles that)
 
 Select via CLI (`--app scopflow --ctgc data/case_ACTIVSg200.cont`) or in the launcher GUI (application dropdown + contingency file selector).
+
+### TCOPFLOW (Multi-Period OPF)
+
+TCOPFLOW solves a multi-period AC optimal power flow over a time horizon with generator ramp constraints between successive periods:
+- Requires **load profile CSV files** — active power (`*_load_P.csv`) and reactive power (`*_load_Q.csv`) — that define per-bus per-period demand
+- The objective is **total cost across all time periods**, not a single snapshot
+- Generator ramp coupling (`--tcopflow-iscoupling`) enforces that output changes between periods stay within ramp limits
+- Standard load commands (`scale_all_loads`, `set_load`) modify the `.m` file but TCOPFLOW reads per-period loads from CSV profiles — use `scale_load_profile` to adjust demand instead
+- Network topology commands (`set_gen_status`, `set_branch_status`, `set_all_bus_vlimits`, etc.) apply across all periods
+- Results show **aggregated metrics** across all periods (worst voltage, peak load, worst line loading) plus a per-period summary table
+- Only the IPOPT solver is supported
+- The launcher auto-selects profile files matching the base case name (e.g., `case9mod.m` → `case9_load_P.csv`)
+
+Load profile files follow the naming convention `<casename>_load_P.csv` / `<casename>_load_Q.csv` (see `data/README.md`). Select via CLI (`--app tcopflow --pload-profile data/case9_load_P.csv --qload-profile data/case9_load_Q.csv`) or in the launcher GUI (application dropdown + auto-matched profile selectors + temporal parameters).
 
 ## Multi-Objective Tracking
 
@@ -225,6 +239,12 @@ llm-sim ./data/case_ACTIVSg200.m \
   "Find the minimum cost dispatch that survives all N-1 contingencies" \
   --app scopflow --ctgc data/case_ACTIVSg200.cont --max-iter 10
 
+# Multi-Period OPF (requires load profile files)
+llm-sim ./data/case9mod.m \
+  "Find the load scaling factor that causes infeasibility over the time horizon" \
+  --app tcopflow --pload-profile data/case9_load_P.csv \
+  --qload-profile data/case9_load_Q.csv --tcopflow-duration 1.0 --tcopflow-dt 15
+
 # Dry run (validate config without executing)
 python -m llm_sim ./data/case_ACTIVSg200.m "test goal" --dry-run
 ```
@@ -311,6 +331,9 @@ python -m pytest tests/test_dcopflow.py -v
 
 # Run SCOPFLOW-specific tests
 python -m pytest tests/test_scopflow.py -v
+
+# Run TCOPFLOW-specific tests
+python -m pytest tests/test_tcopflow.py -v
 
 # Run end-to-end tests (requires opflow binary)
 python -m pytest tests/test_e2e.py -v -m "not slow"

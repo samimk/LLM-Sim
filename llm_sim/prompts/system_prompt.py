@@ -102,12 +102,57 @@ _SCOPFLOW_SECTION = (
     "feasibility searches."
 )
 
+_TCOPFLOW_SECTION = (
+    "=== Multi-Period OPF Characteristics ===\n\n"
+    "TCOPFLOW solves a multi-period AC optimal power flow problem over a time horizon:\n"
+    "- The objective is to minimise TOTAL cost across ALL time periods.\n"
+    "- Generator ramp constraints couple successive time periods: the change in "
+    "generator output between adjacent periods is bounded by ramp limits.\n"
+    "- TCOPFLOW reads per-bus per-period load values from CSV profile files "
+    "(P and Q), NOT from the .m case file. The loads in the .m file are only "
+    "used as period-0 initial values when no profile is provided.\n"
+    "- Standard load commands (scale_all_loads, set_load, scale_load) modify "
+    "the .m file but TCOPFLOW OVERRIDES these with profile data. They have "
+    "LIMITED effect on TCOPFLOW results.\n"
+    "- To actually change the demand level across all periods, use "
+    "scale_load_profile (command 12): "
+    '{"action": "scale_load_profile", "factor": 1.1}\n'
+    "  This multiplies ALL values in both P and Q profile CSVs by the factor.\n"
+    "- Modifications to the network topology (set_gen_status, set_branch_status, "
+    "set_gen_dispatch, set_bus_vlimits, set_all_bus_vlimits, set_branch_rate, "
+    "set_cost_coeffs) apply across ALL periods \u2014 they change the base network.\n\n"
+    "=== TCOPFLOW Results Interpretation ===\n\n"
+    "- The results summary shows AGGREGATED metrics across all periods:\n"
+    "  - Worst voltage (min/max) across all periods\n"
+    "  - Load and generation ranges across the time horizon\n"
+    "  - Worst line loading across all periods\n"
+    "  - A per-period table showing load, generation, voltage range, and "
+    "max loading for each time step\n"
+    "- The worst-case period (lowest voltage, highest loading) determines "
+    "overall feasibility.\n"
+    "- Period-0 details are shown for bus-level and branch-level inspection.\n"
+    "- Use the 'analyze' action with keywords like 'period', 'timestep', or "
+    "'temporal' to inspect per-period data.\n\n"
+    "=== TCOPFLOW Solver ===\n\n"
+"- TCOPFLOW only supports the IPOPT solver.\n"
+"- Feasibility classification:\n"
+"  - feasible: Converged with no violations\n"
+"  - infeasible: Did not converge and metrics are far from limits, or generation < load\n"
+"  - marginal: Did not fully converge BUT metrics are near their limits (e.g., voltage "
+"within 0.01 pu of a bound, line loading within 5% of 100%). This indicates the "
+"operating point is at or near the feasibility boundary — treat as a boundary marker.\n"
+"- When a binary search produces consecutive 'marginal' or 'feasible/infeasible' "
+"oscillations with a gap < 1%, declare 'complete' — you have found the boundary."
+)
+
 def _app_section(application: str) -> str:
     """Return the application-specific prompt section for the given app."""
     if application == "dcopflow":
         return _DC_OPF_SECTION
     if application == "scopflow":
         return _AC_OPF_VOLTAGE_SECTION + "\n\n" + _SCOPFLOW_SECTION
+    if application == "tcopflow":
+        return _AC_OPF_VOLTAGE_SECTION + "\n\n" + _TCOPFLOW_SECTION
     return _AC_OPF_VOLTAGE_SECTION
 
 
@@ -179,6 +224,13 @@ You MUST respond with a single JSON object. Choose one of three actions:
 - Accumulative mode is best for incremental refinement.
 - Declare "complete" when you have a clear answer, when further iterations \
 cannot improve the result, or when the goal is provably infeasible.
+- When performing a binary search (e.g., finding a maximum scaling factor), \
+declare "complete" as soon as the feasible/infeasible gap is below 1%. The \
+last feasible value is your answer — further refinement wastes iterations \
+without meaningful improvement.
+- If the last 2-3 iterations all classify as "marginal" or oscillate between \
+"feasible" and "infeasible" with a tiny gap, you are at the boundary — \
+declare "complete" immediately.
 - Do NOT repeat the same modification if it already failed.
 - If a simulation diverges, try a smaller or different change.
 - When multiple objectives are being tracked, explain tradeoffs between them \
