@@ -39,10 +39,12 @@ Do **not** run `streamlit run app.py` from inside `launcher/` — paths will not
 - Choose LLM backend (Anthropic, OpenAI, Ollama, Ollama-Cloud) with auto-populated model defaults
 - Adjust temperature, iteration mode (accumulative/fresh), and max iterations
 - Search mode selector: **Standard** (goal-directed search) or **Stress Test** (adversarial contingency exploration)
-- Application selector: choose between supported ExaGO applications (OPFLOW for full AC OPF, DCOPFLOW for fast DC approximation, SCOPFLOW for security-constrained OPF, TCOPFLOW for multi-period OPF)
+- Application selector: choose between supported ExaGO applications (OPFLOW for full AC OPF, DCOPFLOW for fast DC approximation, SCOPFLOW for security-constrained OPF, TCOPFLOW for multi-period OPF, SOPFLOW for stochastic OPF)
 - Contingency file selector: appears when SCOPFLOW is selected, showing available `.cont` files from the `data/` directory
 - Load profile selectors: appear when TCOPFLOW is selected, auto-matching profile CSV files to the selected base case (layered fallback: exact prefix → stripped suffix → all profiles). Includes active load (P), reactive load (Q), and optional wind generation profile dropdowns
 - Temporal parameters: appear when TCOPFLOW is selected — Duration (hours), Time-step (minutes), and Generator ramp coupling toggle
+- Scenario file selector: appears when SOPFLOW is selected, auto-matching wind scenario CSV files to the selected base case (layered fallback: exact prefix → stripped suffix → all scenarios). Supports both single-period and multi-period scenario formats
+- SOPFLOW parameters: appear when SOPFLOW is selected — Solver (IPOPT or EMPAR) and First/second stage coupling toggle. MPI core count (`--np`) is available for EMPAR
 - Preset goal library with common optimization tasks (minimize cost, fix voltage violations, stress testing, multi-objective, etc.)
 - Custom goal input via free-text area
 

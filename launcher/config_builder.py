@@ -90,6 +90,26 @@ def scan_profile_files(data_dir: Path | None = None) -> list[Path]:
     return sorted(data_dir.glob("*_load_*.csv"))
 
 
+def scan_scenario_files(data_dir: Path | None = None) -> list[Path]:
+    """Find all wind scenario CSV files in the data directory.
+
+    Looks for files matching *_scenarios.csv and *_10_scenarios.csv.
+
+    Args:
+        data_dir: Path to data directory. Defaults to <project_root>/data.
+
+    Returns:
+        Sorted list of scenario CSV file paths (absolute).
+    """
+    if data_dir is None:
+        data_dir = get_project_root() / "data"
+    if not data_dir.is_dir():
+        return []
+    singles = sorted(data_dir.glob("*_scenarios.csv"))
+    tens = sorted(data_dir.glob("*_10_scenarios.csv"))
+    return sorted(set(singles + tens))
+
+
 _KNOWN_CASE_SUFFIXES = ("mod",)
 
 
@@ -160,6 +180,44 @@ def match_profiles_for_case(
     return {"pload": all_p, "qload": all_q}
 
 
+def match_scenarios_for_case(
+    case_path: Path,
+    data_dir: Path | None = None,
+) -> list[Path]:
+    """Find wind scenario CSV files matching a base case name.
+
+    Uses layered fallback matching:
+    1. Try exact prefix: {case_stem}_*scenarios.csv
+    2. Strip known suffixes: e.g., case9mod_gen3_wind → case9_*scenarios.csv
+    3. If no matches, return all available scenario files as fallback.
+
+    Args:
+        case_path: Path to the .m base case file.
+        data_dir: Path to data directory. Defaults to <project_root>/data.
+
+    Returns:
+        Sorted list of matching scenario file paths.
+    """
+    if data_dir is None:
+        data_dir = get_project_root() / "data"
+    if not data_dir.is_dir():
+        return []
+
+    all_scenarios = scan_scenario_files(data_dir)
+    case_stem = case_path.stem
+    variants = _case_stem_variants(case_stem)
+
+    for stem in variants:
+        matches = sorted(
+            s for s in all_scenarios
+            if s.name.startswith(stem + "_") or s.name.startswith(stem)
+        )
+        if matches:
+            return matches
+
+    return all_scenarios
+
+
 def load_example_goals() -> list[dict[str, str]]:
     """Load preset search goals from assets/example_goals.yaml.
 
@@ -187,10 +245,10 @@ DEFAULT_MODELS: dict[str, str] = {
 BACKENDS: list[str] = ["anthropic", "openai", "ollama", "ollama-cloud"]
 
 # Available applications
-APPLICATIONS: list[str] = ["opflow", "dcopflow", "scopflow", "tcopflow"]
+APPLICATIONS: list[str] = ["opflow", "dcopflow", "scopflow", "tcopflow", "sopflow"]
 
 # Future applications (shown as disabled in the UI)
-FUTURE_APPLICATIONS: list[str] = ["sopflow", "pflow"]
+FUTURE_APPLICATIONS: list[str] = ["pflow"]
 
 # Available search modes
 MODES: list[str] = ["accumulative", "fresh"]
@@ -221,6 +279,9 @@ def build_config_overrides(
     tcopflow_duration: float = 1.0,
     tcopflow_dT: float = 60.0,
     tcopflow_iscoupling: int = 1,
+    scenario_file: str | Path | None = None,
+    sopflow_solver: str = "IPOPT",
+    sopflow_iscoupling: int = 0,
 ) -> dict[str, Any]:
     """Build a CLI-style overrides dict from GUI widget values.
 
@@ -289,6 +350,15 @@ def build_config_overrides(
 
     if tcopflow_iscoupling != 1:
         overrides["search.tcopflow_iscoupling"] = tcopflow_iscoupling
+
+    if scenario_file:
+        overrides["search.scenario_file"] = str(scenario_file)
+
+    if sopflow_solver != "IPOPT":
+        overrides["search.sopflow_solver"] = sopflow_solver
+
+    if sopflow_iscoupling != 0:
+        overrides["search.sopflow_iscoupling"] = sopflow_iscoupling
 
     return overrides
 

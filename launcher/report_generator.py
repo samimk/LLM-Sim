@@ -271,6 +271,12 @@ class ReportGenerator:
             story.append(PageBreak())
             story.extend(self._build_tcopflow_temporal_section(session, tcopflow_period_data))
 
+        # SOPFLOW stochastic analysis section
+        sopflow_num_scenarios = getattr(session, "sopflow_num_scenarios", 0)
+        if session.application == "sopflow" and sopflow_num_scenarios > 0:
+            story.append(PageBreak())
+            story.extend(self._build_sopflow_stochastic_section(session, sopflow_num_scenarios))
+
         # Add steering history section if any directives were used
         if steering_history:
             story.append(PageBreak())
@@ -478,6 +484,7 @@ class ReportGenerator:
             "dcopflow": "DC Optimal Power Flow (DCOPFLOW)",
             "scopflow": "Security-Constrained OPF (SCOPFLOW)",
             "tcopflow": "Multi-Period OPF (TCOPFLOW)",
+            "sopflow": "Stochastic OPF (SOPFLOW)",
         }
         app_label = _APP_LABELS.get(session.application, session.application)
         elements.append(Paragraph(
@@ -530,6 +537,10 @@ class ReportGenerator:
             max_np = max((e.num_steps for e in session.journal.entries if e.num_steps > 0), default=0)
             if max_np > 0:
                 lines.append(f"Time periods per run: {max_np}")
+        if session.application == "sopflow":
+            max_ns = max((e.num_scenarios for e in session.journal.entries if e.num_scenarios > 0), default=0)
+            if max_ns > 0:
+                lines.append(f"Wind scenarios per run: {max_ns}")
         lines.extend([
             f"Duration: {duration.total_seconds():.0f}s",
             f"Termination: {session.termination_reason}",
@@ -755,8 +766,11 @@ class ReportGenerator:
         elements.append(Paragraph("Iteration Log", s["heading1"]))
 
         is_tcopflow = session.application == "tcopflow"
+        is_sopflow = session.application == "sopflow"
         if is_tcopflow:
             header = ["Iter", "Description", "Cost ($)", "Feas.", "Np", "V_min", "V_max", "Load%", "Time(s)"]
+        elif is_sopflow:
+            header = ["Iter", "Description", "Cost ($)", "Feas.", "Ns", "V_min", "V_max", "Load%", "Time(s)"]
         else:
             header = ["Iter", "Description", "Cost ($)", "Feas.", "V_min", "V_max", "Load%", "Time(s)"]
         rows = [header]
@@ -776,6 +790,8 @@ class ReportGenerator:
             ]
             if is_tcopflow:
                 row.append(str(e.num_steps) if e.num_steps > 0 else "—")
+            if is_sopflow:
+                row.append(str(e.num_scenarios) if e.num_scenarios > 0 else "—")
             row.extend([
                 f"{e.voltage_min:.3f}" if e.voltage_min > 0 else "—",
                 f"{e.voltage_max:.3f}" if e.voltage_max > 0 else "—",
@@ -785,6 +801,8 @@ class ReportGenerator:
             rows.append(row)
 
         if is_tcopflow:
+            col_widths = [1.2 * cm, 4.5 * cm, 2.8 * cm, 1.2 * cm, 1.0 * cm, 1.8 * cm, 1.8 * cm, 1.5 * cm, 1.5 * cm]
+        elif is_sopflow:
             col_widths = [1.2 * cm, 4.5 * cm, 2.8 * cm, 1.2 * cm, 1.0 * cm, 1.8 * cm, 1.8 * cm, 1.5 * cm, 1.5 * cm]
         else:
             col_widths = [1.2 * cm, 5.5 * cm, 2.8 * cm, 1.2 * cm, 1.8 * cm, 1.8 * cm, 1.5 * cm, 1.5 * cm]
@@ -1058,5 +1076,67 @@ class ReportGenerator:
                     f"<b>Recommended tradeoff solutions:</b> iterations {recs}",
                     s["body"],
                 ))
+
+        return elements
+
+    # ── SOPFLOW Stochastic Analysis ──────────────────────────────────────
+
+    def _build_sopflow_stochastic_section(
+        self,
+        session: SearchSession,
+        num_scenarios: int,
+    ) -> list:
+        """Build a SOPFLOW stochastic analysis section for the PDF report.
+
+        Shows the number of wind scenarios and key stochastic metrics.
+        """
+        s = self._styles
+        elements: list = []
+        elements.append(Paragraph("Stochastic Analysis (SOPFLOW)", s["heading1"]))
+
+        solver = session.journal.entries[0].solver if session.journal.entries else "IPOPT"
+        elements.append(Paragraph(
+            f"SOPFLOW solved a two-stage stochastic optimization across "
+            f"<b>{num_scenarios}</b> wind generation scenarios using the "
+            f"<b>{solver}</b> solver. The first-stage dispatch must satisfy "
+            f"network constraints across all scenarios simultaneously, ensuring "
+            f"robustness against wind generation uncertainty.",
+            s["body"],
+        ))
+        elements.append(Spacer(1, 0.5 * cm))
+
+        base = session.journal.entries[0] if session.journal.entries else None
+        if base and base.feasible:
+            summary_data = [
+                ["Metric", "Value"],
+                ["Scenarios", str(num_scenarios)],
+                ["Solver", solver],
+                ["Objective (base cost)", f"${base.objective_value:,.2f}"],
+                ["V_min", f"{base.voltage_min:.3f} pu"],
+                ["V_max", f"{base.voltage_max:.3f} pu"],
+                ["Max line loading", f"{base.max_line_loading_pct:.1f}%"],
+                ["Violations", str(base.violations_count)],
+                ["Total generation", f"{base.total_gen_mw:.2f} MW"],
+                ["Total load", f"{base.total_load_mw:.2f} MW"],
+            ]
+            if base.feasibility_detail:
+                summary_data.append(["Feasibility", base.feasibility_detail])
+
+            col_widths = [8 * cm, 8 * cm]
+            summary_table = Table(summary_data, colWidths=col_widths)
+            summary_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3498db")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), self._font_bold),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("FONTNAME", (0, 1), (-1, -1), self._font),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
+                ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            elements.append(summary_table)
 
         return elements

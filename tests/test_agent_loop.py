@@ -205,9 +205,8 @@ class TestAgentLoopModifyComplete:
             controller = AgentLoopController(cfg)
             session = controller.run(BASE_CASE, "Find max feasible load increase")
 
-        # Verify journal: iter 0 (base) + iter 1 (modify) + iter 2 (modify) = 3 entries
-        # complete doesn't add a journal entry
-        assert len(session.journal) == 3
+        # Verify journal: iter 0 (base) + iter 1 (modify) + iter 2 (modify) + iter 3 (complete) = 4
+        assert len(session.journal) == 4
         assert session.journal.entries[0].iteration == 0
         assert session.journal.entries[1].iteration == 1
         assert session.journal.entries[2].iteration == 2
@@ -252,8 +251,7 @@ class TestErrorRecovery:
             session = controller.run(BASE_CASE, "Test error recovery")
 
         # Iter 0 base + iter 1 failed parse (no journal) + iter 2 modify + iter 3 complete
-        # Actually: iter 0 base, iter 1 parse fail, iter 2 modify = 2 entries
-        assert len(session.journal) == 2  # base + 1 modify
+        assert len(session.journal) == 3  # base + modify + complete
         assert session.termination_reason == "completed"
 
     def test_unknown_action(self, tmp_path: Path):
@@ -284,7 +282,7 @@ class TestErrorRecovery:
             session = controller.run(BASE_CASE, "Test unknown action")
 
         assert session.termination_reason == "completed"
-        assert len(session.journal) == 1  # only base case
+        assert len(session.journal) == 2  # base + complete
 
     def test_simulation_failure(self, tmp_path: Path):
         """Simulation fails — journal records infeasible entry."""
@@ -321,7 +319,7 @@ class TestErrorRecovery:
             controller = AgentLoopController(cfg)
             session = controller.run(BASE_CASE, "Test sim failure")
 
-        assert len(session.journal) == 2  # base + failed modify
+        assert len(session.journal) == 3  # base + failed modify + complete
         assert session.journal.entries[1].feasible is False
         assert session.termination_reason == "completed"
 
@@ -480,8 +478,9 @@ class TestAnalyzeAction:
             session = controller.run(BASE_CASE, "Analyze voltages")
 
         assert session.termination_reason == "completed"
-        # Analyze adds a lightweight ANALYSIS entry (base case + analyze = 2)
-        assert len(session.journal) == 2
+        # Analyze adds a lightweight ANALYSIS entry, complete adds a COMPLETE entry
+        # (base case + analyze + complete = 3)
+        assert len(session.journal) == 3
 
 
 @pytest.mark.skipif(not _has_base_case, reason="Base case .m file not found")

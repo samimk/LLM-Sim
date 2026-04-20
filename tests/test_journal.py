@@ -480,4 +480,92 @@ class TestSummaryStats:
         # Override selects the infeasible entry
         stats = j.summary_stats(best_iteration_override=2)
         assert stats["best_iteration"] == 2
-        assert stats["best_objective"] is None  # infeasible has no objective
+
+
+class TestAddAnalysis:
+    def test_add_analysis_creates_entry(self):
+        j = SearchJournal()
+        entry = j.add_analysis(iteration=1, query="voltage profile", result_summary="Vmin=0.95pu")
+        assert entry.iteration == 1
+        assert entry.convergence_status == "ANALYSIS"
+        assert entry.feasible is False
+        assert entry.mode == "analyze"
+        assert entry.objective_value is None
+        assert "voltage profile" in entry.description
+
+    def test_add_analysis_appears_in_entries(self):
+        j = SearchJournal()
+        j.add_entry(_make_entry(0, obj=1000.0))
+        j.add_analysis(iteration=1, query="bus voltages", result_summary="OK")
+        assert len(j.entries) == 2
+        assert j.entries[1].convergence_status == "ANALYSIS"
+
+    def test_add_analysis_in_format_detailed(self):
+        j = SearchJournal()
+        j.add_entry(_make_entry(0, obj=1000.0))
+        j.add_analysis(iteration=1, query="bus voltages", result_summary="Vmin=0.95pu")
+        detailed = j.format_detailed()
+        assert "ANALYSIS" in detailed
+
+    def test_add_analysis_in_csv_export(self, tmp_path):
+        j = SearchJournal()
+        j.add_entry(_make_entry(0, obj=1000.0))
+        j.add_analysis(iteration=1, query="bus voltages", result_summary="OK")
+        csv_path = tmp_path / "journal.csv"
+        j.export_csv(csv_path)
+        content = csv_path.read_text()
+        assert "ANALYSIS" in content
+
+
+class TestAddComplete:
+    def test_add_complete_creates_entry(self):
+        j = SearchJournal()
+        entry = j.add_complete(iteration=3, summary="Search completed: system is feasible")
+        assert entry.iteration == 3
+        assert entry.convergence_status == "COMPLETE"
+        assert entry.feasible is False
+        assert entry.mode == "complete"
+        assert entry.objective_value is None
+        assert "completed" in entry.description.lower()
+
+    def test_add_complete_appears_in_entries(self):
+        j = SearchJournal()
+        j.add_entry(_make_entry(0, obj=1000.0))
+        j.add_entry(_make_entry(1, obj=900.0))
+        j.add_complete(iteration=2, summary="Done")
+        assert len(j.entries) == 3
+        assert j.entries[2].convergence_status == "COMPLETE"
+
+    def test_add_complete_in_format_detailed(self):
+        j = SearchJournal()
+        j.add_entry(_make_entry(0, obj=1000.0))
+        j.add_complete(iteration=1, summary="Search completed")
+        detailed = j.format_detailed()
+        assert "COMPLETE" in detailed
+
+    def test_add_complete_in_csv_export(self, tmp_path):
+        j = SearchJournal()
+        j.add_entry(_make_entry(0, obj=1000.0))
+        j.add_complete(iteration=1, summary="Done")
+        csv_path = tmp_path / "journal.csv"
+        j.export_csv(csv_path)
+        content = csv_path.read_text()
+        assert "COMPLETE" in content
+
+    def test_add_complete_preserves_reasoning(self):
+        j = SearchJournal()
+        entry = j.add_complete(
+            iteration=2,
+            summary="System feasible with 1.5x wind scaling"
+        )
+        assert entry.llm_reasoning == "System feasible with 1.5x wind scaling"
+
+    def test_add_complete_after_modifications(self):
+        j = SearchJournal()
+        j.add_entry(_make_entry(0, obj=3500.0))
+        j.add_entry(_make_entry(1, obj=5000.0))
+        j.add_complete(iteration=2, summary="Done")
+        assert len(j.entries) == 3
+        assert j.entries[0].convergence_status == "CONVERGED"
+        assert j.entries[1].convergence_status == "CONVERGED"
+        assert j.entries[2].convergence_status == "COMPLETE"

@@ -178,7 +178,7 @@ class SimulationExecutor:
         builder = _CMD_BUILDERS.get(application, _default_cmd_builder)
         cmd = builder(binary, input_file, extra_args)
 
-        if self._exago.mpi_np > 1 and application == "scopflow":
+        if self._exago.mpi_np > 1 and application in ("scopflow", "sopflow"):
             cmd = ["mpirun", "-np", str(self._exago.mpi_np)] + cmd
 
         # 5/6. Execute

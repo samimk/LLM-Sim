@@ -35,6 +35,11 @@ from llm_sim.parsers.tcopflow_parser import (
     parse_tcopflow_metadata,
 )
 from llm_sim.parsers.tcopflow_summary import tcopflow_results_summary
+from llm_sim.parsers.sopflow_parser import (
+    parse_sopflow_output,
+    parse_sopflow_simulation_result,
+)
+from llm_sim.parsers.sopflow_summary import sopflow_results_summary
 
 _logger = logging.getLogger("llm_sim.parsers")
 
@@ -66,6 +71,12 @@ def parse_simulation_result_for_app(sim_result, application: str, bus_limits=Non
             return None
         opflow_result, _metadata = parsed
         return opflow_result
+    if application == "sopflow":
+        parsed = parse_sopflow_simulation_result(sim_result, bus_limits=bus_limits)
+        if parsed is None:
+            return None
+        opflow_result, _metadata = parsed
+        return opflow_result
     _logger.warning(
         "Unknown application '%s' for parse_simulation_result_for_app — "
         "falling back to OPFLOW parser.",
@@ -92,6 +103,18 @@ def parse_tcopflow_metadata(sim_result) -> dict | None:
     Returns a dict or None if parsing fails or the simulation did not succeed.
     """
     parsed = parse_tcopflow_simulation_result(sim_result)
+    if parsed is None:
+        return None
+    _opflow_result, metadata = parsed
+    return metadata
+
+
+def parse_sopflow_metadata(sim_result) -> dict | None:
+    """Extract SOPFLOW-specific metadata (num_scenarios, is_coupling, etc.).
+
+    Returns a dict or None if parsing fails or the simulation did not succeed.
+    """
+    parsed = parse_sopflow_simulation_result(sim_result)
     if parsed is None:
         return None
     _opflow_result, metadata = parsed
@@ -132,6 +155,10 @@ def results_summary_for_app(result: OPFLOWResult, application: str, **kwargs) ->
             is_coupling=kwargs.get("is_coupling", True),
             period_data=kwargs.get("period_data"),
         )
+    if application == "sopflow":
+        return sopflow_results_summary(
+            result, num_scenarios=kwargs.get("num_scenarios", 0)
+        )
     _logger.warning(
         "Unknown application '%s' for results_summary_for_app — "
         "falling back to OPFLOW summary.",
@@ -163,9 +190,13 @@ __all__ = [
     "parse_tcopflow_simulation_result",
     "parse_tcopflow_period_files",
     "parse_tcopflow_metadata",
+    "parse_sopflow_output",
+    "parse_sopflow_simulation_result",
+    "parse_sopflow_metadata",
     "results_summary",
     "results_summary_for_app",
     "dcopflow_results_summary",
     "scopflow_results_summary",
     "tcopflow_results_summary",
+    "sopflow_results_summary",
 ]

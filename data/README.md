@@ -9,7 +9,7 @@ Place simulation input files in this directory.
 - **Contingency files** (`.cont`) — For security-constrained analysis (SCOPFLOW)
 - **Load profiles** (`*_load_P.csv`, `*_load_Q.csv`) — Time-series load data for TCOPFLOW
 - **Wind profiles** (`*_wind.csv`) — Wind generation profiles for TCOPFLOW (optional)
-- **Scenario files** — Stochastic scenarios (SOPFLOW)
+- **Scenario files** (`*_scenarios.csv`, `*_10_scenarios.csv`) — Stochastic wind scenarios (SOPFLOW)
 
 ## File naming conventions
 
@@ -32,6 +32,16 @@ Example:
 ### Wind profiles (TCOPFLOW, optional)
 - `<casename>_wind.csv` — e.g., `case9_wind.csv`
 
+### Scenario files (SOPFLOW)
+Name scenario files using the case prefix:
+- `<casename>_scenarios.csv` — Multi-period scenario file (with timestamps)
+- `<casename>_10_scenarios.csv` — Single-period scenario file (with weights)
+
+Example:
+- `case9mod_gen3_wind.m` → `case9_scenarios.csv` + `case9_10_scenarios.csv`
+
+Note: SOPFLOW requires a network file with wind generators (`gentype='W2'`, `genfuel='wind'`).
+
 ## Example
 
 The ACTIVSg200 synthetic test case is a good starting point:
@@ -51,4 +61,13 @@ data/
 ├── case9_load_P.csv        # Active load profile
 ├── case9_load_Q.csv        # Reactive load profile
 └── case9_wind.csv          # Wind profile (optional)
+```
+
+For SOPFLOW (stochastic scenarios):
+
+```
+data/
+├── case9mod_gen3_wind.m    # Network with wind generator
+├── case9_scenarios.csv     # Multi-period wind scenarios
+└── case9_10_scenarios.csv  # Single-period wind scenarios with weights
 ```

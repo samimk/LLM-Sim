@@ -55,6 +55,9 @@ DEFAULTS: dict[str, Any] = {
         "tcopflow_duration": 1.0,
         "tcopflow_dT": 60.0,
         "tcopflow_iscoupling": 1,
+        "scenario_file": None,
+        "sopflow_solver": "IPOPT",
+        "sopflow_iscoupling": 0,
         "application": "opflow",
         "search_mode": "standard",
     },
@@ -119,6 +122,9 @@ class SearchConfig:
     tcopflow_duration: float = 1.0  # Duration in hours for TCOPFLOW
     tcopflow_dT: float = 60.0  # Time-step in minutes for TCOPFLOW
     tcopflow_iscoupling: int = 1  # Ramp coupling (0=off, 1=on) for TCOPFLOW
+    scenario_file: Optional[Path] = None  # Wind scenario CSV for SOPFLOW
+    sopflow_solver: str = "IPOPT"  # Solver for SOPFLOW: IPOPT or EMPAR
+    sopflow_iscoupling: int = 0  # Coupling between first/second stage (0=off, 1=on) for SOPFLOW
 
 
 @dataclass(frozen=True)
@@ -246,7 +252,7 @@ def load_config(
 
     llm = _build_section(LLMConfig, merged["llm"], config_root, set())
 
-    search_path_fields = {"base_case", "gic_file", "ctgc_file", "pload_profile", "qload_profile", "wind_profile"}
+    search_path_fields = {"base_case", "gic_file", "ctgc_file", "pload_profile", "qload_profile", "wind_profile", "scenario_file"}
     search = _build_section(SearchConfig, merged["search"], config_root, search_path_fields)
 
     output = _build_section(OutputConfig, merged["output"], config_root, {"workdir", "logs_dir"})
@@ -296,11 +302,11 @@ def _validate(cfg: AppConfig) -> None:
             "Contingency file does not exist: %s", cfg.search.ctgc_file
         )
 
-    if cfg.exago.mpi_np > 1 and cfg.search.application != "scopflow":
+    if cfg.exago.mpi_np > 1 and cfg.search.application not in ("scopflow", "sopflow"):
         logger.warning(
             "mpi_np=%d is set but application '%s' only supports single-core "
             "IPOPT execution. mpi_np will be ignored. "
-            "Only SCOPFLOW supports multi-core via EMPAR.",
+            "Only SCOPFLOW and SOPFLOW support multi-core via EMPAR.",
             cfg.exago.mpi_np, cfg.search.application,
         )
 
@@ -326,4 +332,26 @@ def _validate(cfg: AppConfig) -> None:
         if cfg.search.wind_profile is not None and not cfg.search.wind_profile.exists():
             logger.warning(
                 "Wind generation profile does not exist: %s", cfg.search.wind_profile
+            )
+
+    if cfg.search.application == "sopflow":
+        if cfg.search.scenario_file is None:
+            logger.warning(
+                "SOPFLOW requires a scenario file (-windgen). "
+                "Set search.scenario_file in config or use --scenario-file on the CLI."
+            )
+        if cfg.search.scenario_file is not None and not cfg.search.scenario_file.exists():
+            logger.warning(
+                "Scenario file does not exist: %s", cfg.search.scenario_file
+            )
+        valid_solvers = {"IPOPT", "EMPAR"}
+        if cfg.search.sopflow_solver not in valid_solvers:
+            logger.warning(
+                "Unknown SOPFLOW solver '%s' (expected one of %s)",
+                cfg.search.sopflow_solver, valid_solvers,
+            )
+        if cfg.search.sopflow_solver == "EMPAR" and cfg.exago.mpi_np < 2:
+            logger.warning(
+                "SOPFLOW with EMPAR solver typically requires mpi_np >= 2 "
+                "(currently mpi_np=%d).", cfg.exago.mpi_np,
             )

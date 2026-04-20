@@ -51,6 +51,10 @@ search:
   tcopflow_duration: 1.0        # duration in hours (default: 1.0)
   tcopflow_dT: 60.0             # time-step in minutes (default: 60)
   tcopflow_iscoupling: 1        # generator ramp coupling: 1=on, 0=off
+  # SOPFLOW-specific
+  scenario_file: null            # wind scenario CSV for SOPFLOW (single-period: scenario_nr,<wind_cols>,weight; multi-period: sim_timestamp,scenario_nr,<wind_cols>)
+  sopflow_solver: "IPOPT"        # SOPFLOW solver: IPOPT (single-core) or EMPAR (multi-core, requires --np >= 2)
+  sopflow_iscoupling: 0          # first/second stage coupling: 0=off (default), 1=on
 
 # Output settings
 output:

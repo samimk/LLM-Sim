@@ -121,10 +121,23 @@ class ScaleLoadProfile:
     factor: float
 
 
+@dataclass
+class ScaleWindScenario:
+    """Scale wind generation values in a scenario CSV by a factor (SOPFLOW only).
+
+    Multiplies all numeric wind generation columns in the scenario CSV file
+    by the given factor, preserving non-numeric columns (scenario_nr,
+    sim_timestamp, weight). This is the correct mechanism for adjusting
+    wind generation variability in SOPFLOW.
+    """
+
+    factor: float
+
+
 ModCommand = Union[
     SetLoad, ScaleLoad, ScaleAllLoads, SetGenStatus, SetGenDispatch,
     SetGenVoltage, SetBranchStatus, SetBranchRate, SetCostCoeffs,
-    SetBusVLimits, SetAllBusVLimits, ScaleLoadProfile,
+    SetBusVLimits, SetAllBusVLimits, ScaleLoadProfile, ScaleWindScenario,
 ]
 
 # Map action names to command classes and their required fields
@@ -141,6 +154,7 @@ _COMMAND_MAP: dict[str, tuple[type, set[str]]] = {
     "set_bus_vlimits": (SetBusVLimits, {"bus"}),
     "set_all_bus_vlimits": (SetAllBusVLimits, set()),
     "scale_load_profile": (ScaleLoadProfile, {"factor"}),
+    "scale_wind_scenario": (ScaleWindScenario, {"factor"}),
 }
 
 

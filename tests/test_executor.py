@@ -302,6 +302,34 @@ class TestMPIGuard:
             cmd_arg = mock_sub.call_args[0][0]
             assert cmd_arg[0] != "mpirun"
 
+    @pytest.mark.skipif(not _has_test_file, reason="test data not available")
+    def test_mpirun_for_sopflow_with_mpi_np(self, tmp_path: Path):
+        self._make_fake_bin(tmp_path / "bin", "sopflow")
+        exago, output = self._make_config_with_mpi(tmp_path, mpi_np=4)
+        executor = SimulationExecutor(exago, output)
+        net = parse_matpower(ACTIVSG200)
+
+        with patch("llm_sim.engine.executor.subprocess.run") as mock_sub:
+            mock_sub.return_value = MagicMock(stdout="OK", stderr="", returncode=0)
+            executor.run(net, application="sopflow", iteration=0)
+            cmd_arg = mock_sub.call_args[0][0]
+            assert cmd_arg[0] == "mpirun"
+            assert cmd_arg[1] == "-np"
+            assert cmd_arg[2] == "4"
+
+    @pytest.mark.skipif(not _has_test_file, reason="test data not available")
+    def test_no_mpirun_for_sopflow_with_mpi_np_1(self, tmp_path: Path):
+        self._make_fake_bin(tmp_path / "bin", "sopflow")
+        exago, output = self._make_config_with_mpi(tmp_path, mpi_np=1)
+        executor = SimulationExecutor(exago, output)
+        net = parse_matpower(ACTIVSG200)
+
+        with patch("llm_sim.engine.executor.subprocess.run") as mock_sub:
+            mock_sub.return_value = MagicMock(stdout="OK", stderr="", returncode=0)
+            executor.run(net, application="sopflow", iteration=0)
+            cmd_arg = mock_sub.call_args[0][0]
+            assert cmd_arg[0] != "mpirun"
+
 
 class TestExecutorLive:
 

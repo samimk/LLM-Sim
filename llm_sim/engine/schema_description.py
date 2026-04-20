@@ -74,14 +74,23 @@ Available modification commands (JSON format):
      This is the preferred way to enforce system-wide voltage constraints in
      OPFLOW. Much more efficient than issuing set_bus_vlimits for each bus.
 
- 12. scale_load_profile — Scale per-period load profile values (TCOPFLOW only)
-     Required: factor (float, e.g. 1.2 for +20%)
-     Example: {"action": "scale_load_profile", "factor": 1.2}
-     Multiplies all numeric values in both P and Q load profile CSV files
-     by the given factor. This is the correct way to adjust demand for
-     TCOPFLOW, since TCOPFLOW reads per-period loads from profile files,
-     not the .m case file. Standard load commands (scale_all_loads, set_load)
-     modify the .m file but TCOPFLOW overrides these with profile data.
+  12. scale_load_profile — Scale per-period load profile values (TCOPFLOW only)
+      Required: factor (float, e.g. 1.2 for +20%)
+      Example: {"action": "scale_load_profile", "factor": 1.2}
+      Multiplies all numeric values in both P and Q load profile CSV files
+      by the given factor. This is the correct way to adjust demand for
+      TCOPFLOW, since TCOPFLOW reads per-period loads from profile files,
+      not the .m case file. Standard load commands (scale_all_loads, set_load)
+      modify the .m file but TCOPFLOW overrides these with profile data.
+
+  13. scale_wind_scenario — Scale wind generation values in scenario CSV (SOPFLOW only)
+      Required: factor (float, e.g. 1.5 for +50%)
+      Example: {"action": "scale_wind_scenario", "factor": 1.5}
+      Multiplies all numeric wind generation columns in the scenario CSV file
+      by the given factor, preserving non-numeric columns (scenario_nr,
+      sim_timestamp, weight). This is the correct way to adjust wind generation
+      variability in SOPFLOW, since SOPFLOW reads wind scenarios from the CSV
+      file, not the .m case file.
 
 Return your commands as a JSON object with a "commands" key containing a list:
 {"commands": [{"action": "...", ...}, {"action": "...", ...}]}

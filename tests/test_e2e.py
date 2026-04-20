@@ -211,7 +211,7 @@ class TestE2EMockLLMRealOpflow:
             controller = AgentLoopController(cfg, quiet=True)
             session = controller.run(BASE_CASE, "Test 5% load increase")
 
-        assert len(session.journal) == 2  # base + modify
+        assert len(session.journal) == 3  # base + modify + complete
         assert session.journal.entries[0].feasible is True
         assert session.journal.entries[1].feasible is True
         # Modified case should have higher cost than base

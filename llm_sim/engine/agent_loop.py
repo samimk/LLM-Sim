@@ -33,6 +33,15 @@ from llm_sim.parsers import (
 )
 from llm_sim.parsers.matpower_model import MATNetwork
 from llm_sim.parsers.opflow_results import OPFLOWResult
+
+
+def _count_scenario_rows(scenario_path: Path) -> int:
+    """Count data rows (excluding header) in a SOPFLOW scenario CSV file."""
+    try:
+        lines = scenario_path.read_text(encoding="utf-8").strip().splitlines()
+        return max(len(lines) - 1, 1)
+    except (OSError, UnicodeDecodeError):
+        return 1
 from llm_sim.prompts import build_system_prompt, build_user_prompt
 from llm_sim.engine.goal_classifier import build_classification_prompts, parse_goal_classification
 
@@ -71,6 +80,7 @@ class SearchSession:
     tcopflow_dT_min: float = 0.0
     tcopflow_duration_min: float = 0.0
     tcopflow_is_coupling: bool = True
+    sopflow_num_scenarios: int = 0
 
 
 class AgentLoopController:
@@ -121,6 +131,8 @@ class AgentLoopController:
         self._tcopflow_is_coupling: bool = True
         self._tcopflow_period_data: list[dict] = []
         self._tcopflow_profile_overrides: dict[str, Path] = {}
+        self._sopflow_num_scenarios: int = 0
+        self._sopflow_scenario_override: Optional[Path] = None
 
     # ------------------------------------------------------------------
     # Output helper
@@ -204,6 +216,20 @@ class AgentLoopController:
             if iscoupling != 1:
                 args.extend(["-tcopflow_iscoupling", str(iscoupling)])
 
+        if app == "sopflow":
+            scenario = self._sopflow_scenario_override or self._config.search.scenario_file
+            if scenario:
+                args.extend(["-windgen", str(scenario)])
+                num_scenarios = _count_scenario_rows(Path(str(scenario)))
+                args.extend(["-sopflow_Ns", str(num_scenarios)])
+            solver = self._config.search.sopflow_solver
+            args.extend(["-sopflow_solver", solver])
+            iscoupling = self._config.search.sopflow_iscoupling
+            if iscoupling != 0:
+                args.extend(["-sopflow_iscoupling", str(iscoupling)])
+            if self._config.exago.mpi_np > 1 and solver == "EMPAR":
+                pass  # MPI is handled by the executor
+
         if self._config.search.gic_file:
             args.extend(["-gicfile", str(self._config.search.gic_file)])
 
@@ -268,6 +294,13 @@ class AgentLoopController:
                 self._tcopflow_is_coupling = meta.get("num_coupling_constraints", 0) > 0
             self._tcopflow_period_data = parse_tcopflow_period_files(sim_result.workdir)
 
+        # Extract SOPFLOW metadata once from base case
+        if self._config.search.application == "sopflow" and sim_result.success:
+            from llm_sim.parsers import parse_sopflow_metadata
+            meta = parse_sopflow_metadata(sim_result)
+            if meta:
+                self._sopflow_num_scenarios = meta.get("num_scenarios", 0)
+
         opflow = parse_simulation_result_for_app(
             sim_result,
             application=self._config.search.application,
@@ -285,6 +318,7 @@ class AgentLoopController:
                 dT_min=self._tcopflow_dT_min,
                 is_coupling=self._tcopflow_is_coupling,
                 period_data=self._tcopflow_period_data if self._tcopflow_period_data else None,
+                num_scenarios=self._sopflow_num_scenarios,
             )
             self._base_opflow_result = opflow
             self._opflow_results_cache[0] = opflow
@@ -297,6 +331,7 @@ class AgentLoopController:
                 llm_reasoning="Baseline run",
                 mode="fresh",
                 num_steps=self._tcopflow_num_steps,
+                num_scenarios=self._sopflow_num_scenarios,
             )
             self._print(
                 f"[Iter 0] Base case: {opflow.convergence_status}, "
@@ -313,6 +348,7 @@ class AgentLoopController:
                 llm_reasoning="Baseline run",
                 mode="fresh",
                 num_steps=self._tcopflow_num_steps,
+                num_scenarios=self._sopflow_num_scenarios,
             )
             self._error_feedback = (
                 f"Base case simulation failed: {sim_result.error_message or 'unknown error'}"
@@ -513,6 +549,7 @@ class AgentLoopController:
         if mode == "fresh":
             base_net = self._base_network
             self._tcopflow_profile_overrides = {}
+            self._sopflow_scenario_override = None
         else:
             base_net = self._current_network
 
@@ -535,13 +572,24 @@ class AgentLoopController:
                     "qload_profile": self._tcopflow_profile_overrides.get("qload_profile") or self._config.search.qload_profile,
                     "profile_output_dir": self._config.output.workdir / f"profiles_iter_{iteration:03d}",
                 }
+            # Build SOPFLOW scenario args for modifier
+            _sopflow_mod_kwargs = {}
+            if self._config.search.application == "sopflow":
+                _sopflow_mod_kwargs = {
+                    "scenario_file": self._sopflow_scenario_override or self._config.search.scenario_file,
+                    "scenario_output_dir": self._config.output.workdir / f"scenarios_iter_{iteration:03d}",
+                }
             modified_net, report = apply_modifications(
                 base_net, commands, application=self._config.search.application,
                 **_tcopflow_mod_kwargs,
+                **_sopflow_mod_kwargs,
             )
             # Store profile overrides from modifier for subsequent iterations
             if report.profile_paths:
                 self._tcopflow_profile_overrides.update(report.profile_paths)
+            # Store scenario path override from modifier for subsequent iterations
+            if report.scenario_paths:
+                self._sopflow_scenario_override = report.scenario_paths.get("scenario_file")
             skipped_msgs = []
             for cmd, reasons in report.skipped:
                 skipped_msgs.append(f"Skipped {cmd}: {'; '.join(reasons)}")
@@ -608,6 +656,7 @@ class AgentLoopController:
                 dT_min=self._tcopflow_dT_min,
                 is_coupling=self._tcopflow_is_coupling,
                 period_data=self._tcopflow_period_data if self._tcopflow_period_data else None,
+                num_scenarios=self._sopflow_num_scenarios,
             )
             self._current_network = modified_net
             self._print(
@@ -664,6 +713,7 @@ class AgentLoopController:
             mode=mode,
             steering_directive=active_directive,
             num_steps=self._tcopflow_num_steps,
+            num_scenarios=self._sopflow_num_scenarios,
         )
 
         # Extract tracked metrics for multi-objective tracking
@@ -685,6 +735,11 @@ class AgentLoopController:
 
         self._print(f"[Iter {iteration}] LLM action: complete")
         self._print(f'[Iter {iteration}] Search completed: "{summary_text}"')
+
+        self._journal.add_complete(
+            iteration=iteration,
+            summary=summary_text,
+        )
 
         self._final_findings = findings
         return "complete", False
@@ -724,6 +779,7 @@ class AgentLoopController:
 
         _dcopflow = self._config.search.application == "dcopflow"
         _tcopflow = self._config.search.application == "tcopflow"
+        _sopflow = self._config.search.application == "sopflow"
 
         # ── TCOPFLOW time-period queries ──────────────────────────────────
         if _tcopflow and ("period" in q or "time step" in q or "timestep" in q or "temporal" in q):
@@ -748,6 +804,58 @@ class AgentLoopController:
             lines.append(f"Worst voltage: period {worst_v['period']} (Vmin={worst_v['voltage_min']:.3f} pu)")
             lines.append(f"Worst line loading: period {worst_load['period']} ({worst_load['max_line_loading_pct']:.1f}%)")
             return "\n".join(lines)
+
+        # ── SOPFLOW scenario queries ─────────────────────────────────────
+        # Only intercept queries that are purely about scenario/wind metadata.
+        # If the query also asks about voltage, loading, or generators,
+        # let it fall through to the standard pattern matchers so the LLM
+        # gets useful data instead of a generic 4-line dead end.
+        if _sopflow and ("scenario" in q or "wind" in q or "stochastic" in q):
+            _wants_metrics = (
+                "voltage" in q or "vm" in q or "bus" in q
+                or "loading" in q or "line" in q or "branch" in q
+                or "generator" in q or "load" in q or "loss" in q
+                or "flow" in q or "slack" in q
+            )
+            if not _wants_metrics:
+                wind_gens = [g for g in opf.generators if "wind" in g.fuel.lower() and g.status == 1]
+                wind_info = ""
+                if wind_gens:
+                    wind_pg = sum(g.Pg for g in wind_gens)
+                    wind_pmax = sum(g.Pmax for g in wind_gens)
+                    wind_util = wind_pg / wind_pmax * 100 if wind_pmax > 0 else 0
+                    wind_info = (
+                        f"Wind generators: {len(wind_gens)} online, "
+                        f"total {wind_pg:.2f} MW / {wind_pmax:.2f} MW capacity "
+                        f"({wind_util:.0f}% utilization)"
+                    )
+                lines = [
+                    f"SOPFLOW scenario summary ({self._sopflow_num_scenarios} scenarios):",
+                    f"Solver: {opf.solver}",
+                    wind_info,
+                    f"Base-case dispatch cost: ${opf.objective_value:,.2f}",
+                ]
+                if opf.num_violations > 0:
+                    lines.append(f"Constraints violated in base case: {opf.num_violations}")
+                else:
+                    lines.append("All scenarios satisfied network constraints (base case feasible).")
+                lines.append(
+                    "Note: SOPFLOW output only contains the base-case (first-stage) dispatch. "
+                    "Per-scenario voltage/loading data is not available. "
+                    "To explore scenario effects, modify the network (e.g., scale_wind_scenario, "
+                    "scale_all_loads) and observe feasibility changes."
+                )
+                if wind_gens:
+                    wind_pg = sum(g.Pg for g in wind_gens)
+                    wind_pmax = sum(g.Pmax for g in wind_gens)
+                    if wind_pmax > 0 and wind_pg / wind_pmax >= 0.995:
+                        lines.append(
+                            "WARNING: Wind generators are at maximum capacity in the base-case "
+                            "dispatch. scale_wind_scenario alone will NOT change the first-stage "
+                            "dispatch. Increase wind Pmax (set_gen_dispatch) or increase system "
+                            "stress (scale_all_loads) to see feasibility changes."
+                        )
+                return "\n".join(lines)
         m = re.search(r"voltage\s+below\s+([\d.]+)", q)
         if m:
             if _dcopflow:
@@ -1139,6 +1247,7 @@ class AgentLoopController:
         session.tcopflow_dT_min = self._tcopflow_dT_min
         session.tcopflow_duration_min = self._tcopflow_duration_min
         session.tcopflow_is_coupling = self._tcopflow_is_coupling
+        session.sopflow_num_scenarios = self._sopflow_num_scenarios
 
         # Always print the final summary (even in quiet mode)
         print()
@@ -1286,6 +1395,22 @@ class AgentLoopController:
                 (e.num_steps for e in saved["journal_entries"] if e.num_steps > 0), default=0
             )
 
+        # Restore SOPFLOW scenario count and override
+        self._sopflow_num_scenarios = saved.get("sopflow_num_scenarios", 0)
+        if not self._sopflow_num_scenarios:
+            self._sopflow_num_scenarios = max(
+                (e.num_scenarios for e in saved["journal_entries"] if e.num_scenarios > 0), default=0
+            )
+        _sopflow_scenario_str = saved.get("sopflow_scenario_override")
+        self._sopflow_scenario_override = Path(_sopflow_scenario_str) if _sopflow_scenario_str else None
+
+        # Restore TCOPFLOW profile overrides
+        _saved_profile_overrides = saved.get("tcopflow_profile_overrides")
+        if _saved_profile_overrides:
+            self._tcopflow_profile_overrides = {k: Path(v) for k, v in _saved_profile_overrides.items()}
+        else:
+            self._tcopflow_profile_overrides = {}
+
         # Restore token counts
         self._total_prompt_tokens = saved["total_prompt_tokens"]
         self._total_completion_tokens = saved["total_completion_tokens"]
@@ -1420,4 +1545,7 @@ class AgentLoopController:
             tcopflow_dT_min=self._tcopflow_dT_min,
             tcopflow_duration_min=self._tcopflow_duration_min,
             tcopflow_is_coupling=self._tcopflow_is_coupling,
+            sopflow_num_scenarios=self._sopflow_num_scenarios,
+            sopflow_scenario_override=str(self._sopflow_scenario_override) if self._sopflow_scenario_override else None,
+            tcopflow_profile_overrides={k: str(v) for k, v in self._tcopflow_profile_overrides.items()} if self._tcopflow_profile_overrides else None,
         )

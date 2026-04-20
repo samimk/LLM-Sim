@@ -117,10 +117,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="TCOPFLOW generator ramp coupling: 1=on (default), 0=off",
     )
     parser.add_argument(
+        "--scenario-file",
+        dest="scenario_file",
+        help="Path to wind scenario CSV file (required for SOPFLOW)",
+    )
+    parser.add_argument(
+        "--sopflow-solver",
+        dest="sopflow_solver",
+        choices=["IPOPT", "EMPAR"],
+        help="SOPFLOW solver: IPOPT (default) or EMPAR",
+    )
+    parser.add_argument(
+        "--sopflow-iscoupling",
+        dest="sopflow_iscoupling",
+        type=int,
+        choices=[0, 1],
+        help="SOPFLOW first/second stage coupling: 0=off (default), 1=on",
+    )
+    parser.add_argument(
         "--np",
         dest="mpi_np",
         type=int,
-        help="Number of MPI processes for ExaGO (default: 1). Only SCOPFLOW supports multi-core via EMPAR.",
+        help="Number of MPI processes for ExaGO (default: 1). SCOPFLOW and SOPFLOW support multi-core via EMPAR.",
     )
     parser.add_argument(
         "--verbose",
@@ -186,6 +204,12 @@ def _cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
         overrides["search.tcopflow_dT"] = args.tcopflow_dT
     if getattr(args, "tcopflow_iscoupling", None) is not None:
         overrides["search.tcopflow_iscoupling"] = args.tcopflow_iscoupling
+    if args.scenario_file is not None:
+        overrides["search.scenario_file"] = args.scenario_file
+    if getattr(args, "sopflow_solver", None) is not None:
+        overrides["search.sopflow_solver"] = args.sopflow_solver
+    if getattr(args, "sopflow_iscoupling", None) is not None:
+        overrides["search.sopflow_iscoupling"] = args.sopflow_iscoupling
     if args.mpi_np is not None:
         overrides["exago.mpi_np"] = args.mpi_np
     if args.search_mode is not None:

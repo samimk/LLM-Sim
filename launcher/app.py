@@ -23,7 +23,8 @@ import plotly.graph_objects as go
 
 from config_builder import (
     scan_data_files, scan_contingency_files, scan_profile_files,
-    match_profiles_for_case, load_example_goals,
+    scan_scenario_files, match_profiles_for_case, match_scenarios_for_case,
+    load_example_goals,
     build_config_overrides, get_default_config_path, get_project_root,
     DEFAULT_MODELS, BACKENDS, APPLICATIONS, FUTURE_APPLICATIONS, MODES,
     SEARCH_MODES,
@@ -96,10 +97,11 @@ def get_network_info(file_path: str) -> dict:
 # ── Start Search Logic ───────────────────────────────────────────────────────
 
 def start_search(base_case_path, goal, backend, model, temperature,
-                 application, mode, max_iterations, search_mode="standard",
-                 ctgc_file=None, mpi_np=1,
-                 pload_profile=None, qload_profile=None, wind_profile=None,
-                 tcopflow_duration=1.0, tcopflow_dT=60.0, tcopflow_iscoupling=1):
+                  application, mode, max_iterations, search_mode="standard",
+                  ctgc_file=None, mpi_np=1,
+                  pload_profile=None, qload_profile=None, wind_profile=None,
+                  tcopflow_duration=1.0, tcopflow_dT=60.0, tcopflow_iscoupling=1,
+                  scenario_file=None, sopflow_solver="IPOPT", sopflow_iscoupling=0):
     """Initialize and start a new search."""
     # Validate base case still exists
     if not Path(base_case_path).exists():
@@ -131,6 +133,9 @@ def start_search(base_case_path, goal, backend, model, temperature,
         tcopflow_duration=tcopflow_duration,
         tcopflow_dT=tcopflow_dT,
         tcopflow_iscoupling=tcopflow_iscoupling,
+        scenario_file=scenario_file,
+        sopflow_solver=sopflow_solver,
+        sopflow_iscoupling=sopflow_iscoupling,
     )
 
     if st.session_state.session_manager is None:
@@ -321,6 +326,49 @@ def render_sidebar() -> dict:
                 help="When enabled, generator ramp limits are enforced between periods.",
             )
 
+        # Scenario file and solver for SOPFLOW only
+        scenario_file = None
+        sopflow_solver = "IPOPT"
+        sopflow_iscoupling = 0
+        if application == "sopflow":
+            # Auto-match scenario files to selected base case
+            scenario_matches = (
+                match_scenarios_for_case(selected_file)
+                if selected_file else []
+            )
+            if scenario_matches:
+                scenario_names = [f.name for f in scenario_matches]
+                scenario_idx = st.selectbox(
+                    "Wind scenario file",
+                    range(len(scenario_matches)),
+                    format_func=lambda i: scenario_names[i],
+                    disabled=disabled,
+                    help="SOPFLOW requires a wind scenario file (-windgen). "
+                    "Auto-matched to base case filename.",
+                )
+                scenario_file = scenario_matches[scenario_idx]
+                st.caption(f"`{scenario_file}`")
+            else:
+                st.warning(
+                    "No scenario files found in data/ directory. "
+                    "SOPFLOW requires a wind scenario file."
+                )
+
+            sopflow_solver = st.selectbox(
+                "SOPFLOW Solver",
+                ["IPOPT", "EMPAR"],
+                disabled=disabled,
+                help="IPOPT: single-core deterministic solver. "
+                "EMPAR: multi-core decomposition solver (requires MPI processes > 1).",
+            )
+            sopflow_iscoupling = st.selectbox(
+                "First/second stage coupling",
+                [0, 1],
+                format_func=lambda x: "Enabled" if x == 1 else "Disabled",
+                disabled=disabled,
+                help="When enabled, first and second stage decisions are coupled.",
+            )
+
         mode = st.selectbox("Mode", MODES, disabled=disabled)
         search_mode = st.selectbox(
             "Search Mode", SEARCH_MODES, disabled=disabled,
@@ -329,7 +377,7 @@ def render_sidebar() -> dict:
         max_iterations = st.slider(
             "Max iterations", 1, 50, 20, disabled=disabled,
         )
-        mpi_disabled = disabled or application != "scopflow"
+        mpi_disabled = disabled or application not in ("scopflow", "sopflow")
         mpi_np = st.number_input(
             "MPI processes",
             min_value=1,
@@ -337,10 +385,10 @@ def render_sidebar() -> dict:
             value=1,
             disabled=mpi_disabled,
             help="Number of MPI processes for ExaGO (default: 1). "
-            "Only SCOPFLOW supports multi-core execution via EMPAR solver. "
+            "SCOPFLOW and SOPFLOW support multi-core execution via EMPAR solver. "
             "OPFLOW, DCOPFLOW, and TCOPFLOW use IPOPT on a single core only.",
         )
-        if application != "scopflow":
+        if application not in ("scopflow", "sopflow"):
             mpi_np = 1
 
         # ── Search Goal ──────────────────────────────────────────────────
@@ -401,6 +449,9 @@ def render_sidebar() -> dict:
                 tcopflow_duration=tcopflow_duration,
                 tcopflow_dT=tcopflow_dT,
                 tcopflow_iscoupling=tcopflow_iscoupling,
+                scenario_file=scenario_file,
+                sopflow_solver=sopflow_solver,
+                sopflow_iscoupling=sopflow_iscoupling,
             )
             st.rerun()
 
@@ -550,6 +601,8 @@ def _iteration_icon(entry: dict) -> str:
     """Return a status icon for an iteration log entry."""
     if entry.get("convergence_status") == "FAILED" or entry.get("status") == "FAILED":
         return "❌"
+    if entry.get("convergence_status") == "COMPLETE":
+        return "🏁"
     if entry.get("feasible"):
         return "✅"
     return "⚠️"

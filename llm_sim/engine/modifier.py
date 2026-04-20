@@ -13,6 +13,7 @@ from llm_sim.engine.commands import (
     ScaleAllLoads,
     ScaleLoad,
     ScaleLoadProfile,
+    ScaleWindScenario,
     SetAllBusVLimits,
     SetBranchRate,
     SetBranchStatus,
@@ -37,6 +38,7 @@ class ModificationReport:
     skipped: list[tuple[ModCommand, list[str]]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     profile_paths: dict[str, Path] = field(default_factory=dict)
+    scenario_paths: dict[str, Path] = field(default_factory=dict)
 
 
 def _find_bus(net: MATNetwork, bus_id: int):
@@ -206,6 +208,16 @@ _SCALE_LOAD_PROFILE_NON_TCOPFLOW_WARNING = (
     "Use scale_all_loads or scale_load for other applications."
 )
 
+_SCALE_WIND_SCENARIO_NON_SOPFLOW_WARNING = (
+    "scale_wind_scenario skipped: only applies to SOPFLOW. "
+    "Use scale_all_loads or scale_load for other applications."
+)
+
+# Column names that should be preserved (not scaled) in scenario CSV files.
+# Single-period format: scenario_nr, <wind_cols>, weight
+# Multi-period format: sim_timestamp, scenario_nr, <wind_cols>
+_SCENARIO_NON_NUMERIC_COLUMNS = {"scenario_nr", "sim_timestamp", "weight"}
+
 
 def scale_load_profile_csv(
     csv_path: Path,
@@ -254,6 +266,65 @@ def scale_load_profile_csv(
     return out_path
 
 
+def scale_wind_scenario_csv(
+    csv_path: Path,
+    factor: float,
+    output_dir: Path,
+    suffix: str = "",
+) -> Path:
+    """Scale wind generation values in a SOPFLOW scenario CSV by a factor.
+
+    Handles both scenario file formats:
+    - Single-period: scenario_nr, <wind_cols>, weight
+    - Multi-period: sim_timestamp, scenario_nr, <wind_cols>
+
+    Non-numeric columns (scenario_nr, sim_timestamp, weight) are preserved.
+    All other columns (wind generation values) are multiplied by *factor*.
+
+    Args:
+        csv_path: Path to the original scenario CSV.
+        factor: Scaling factor (e.g., 1.5 for +50%).
+        output_dir: Directory to write the scaled CSV.
+        suffix: Optional suffix appended to the filename.
+
+    Returns:
+        Path to the written scaled CSV file.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = csv_path.stem + suffix
+    out_path = output_dir / f"{stem}.csv"
+
+    rows_out: list[list[str]] = []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        header = next(reader)
+        rows_out.append(header)
+
+        # Identify which columns are non-numeric (preserve them)
+        non_numeric_cols = set()
+        for i, col_name in enumerate(header):
+            if col_name.strip().lower() in _SCENARIO_NON_NUMERIC_COLUMNS:
+                non_numeric_cols.add(i)
+
+        for row in reader:
+            scaled = []
+            for i, val in enumerate(row):
+                if i in non_numeric_cols:
+                    scaled.append(val)
+                else:
+                    try:
+                        scaled.append(str(float(val) * factor))
+                    except ValueError:
+                        scaled.append(val)
+            rows_out.append(scaled)
+
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerows(rows_out)
+
+    return out_path
+
+
 def apply_modifications(
     net: MATNetwork,
     commands: list[ModCommand],
@@ -261,6 +332,8 @@ def apply_modifications(
     pload_profile: Path | None = None,
     qload_profile: Path | None = None,
     profile_output_dir: Path | None = None,
+    scenario_file: Path | None = None,
+    scenario_output_dir: Path | None = None,
 ) -> tuple[MATNetwork, ModificationReport]:
     """Apply a list of modification commands to a network.
 
@@ -276,6 +349,8 @@ def apply_modifications(
         pload_profile: Path to active load profile CSV (required for ScaleLoadProfile).
         qload_profile: Path to reactive load profile CSV (required for ScaleLoadProfile).
         profile_output_dir: Directory for scaled profile output (required for ScaleLoadProfile).
+        scenario_file: Path to wind scenario CSV (required for ScaleWindScenario, SOPFLOW).
+        scenario_output_dir: Directory for scaled scenario output (required for ScaleWindScenario).
 
     Returns:
         Tuple of (modified_network, report). The report.profile_paths dict
@@ -312,6 +387,28 @@ def apply_modifications(
             report.profile_paths["pload_profile"] = scaled_p
             report.profile_paths["qload_profile"] = scaled_q
             desc = f"Scaled load profiles by factor {cmd.factor} (P: {scaled_p.name}, Q: {scaled_q.name})"
+            report.applied.append((cmd, desc))
+            logger.info("Applied: %s", desc)
+            continue
+
+        # Handle ScaleWindScenario separately — it modifies CSV files, not the network
+        if isinstance(cmd, ScaleWindScenario):
+            if application != "sopflow":
+                report.warnings.append(_SCALE_WIND_SCENARIO_NON_SOPFLOW_WARNING)
+                logger.warning(_SCALE_WIND_SCENARIO_NON_SOPFLOW_WARNING)
+                report.skipped.append((cmd, ["Only applicable for SOPFLOW"]))
+                continue
+            if scenario_file is None:
+                err = "ScaleWindScenario requires a scenario_file path"
+                report.skipped.append((cmd, [err]))
+                logger.warning(err)
+                continue
+            out_dir = scenario_output_dir or scenario_file.parent
+            scaled_scenario = scale_wind_scenario_csv(
+                scenario_file, cmd.factor, out_dir,
+            )
+            report.scenario_paths["scenario_file"] = scaled_scenario
+            desc = f"Scaled wind scenario by factor {cmd.factor} ({scaled_scenario.name})"
             report.applied.append((cmd, desc))
             logger.info("Applied: %s", desc)
             continue

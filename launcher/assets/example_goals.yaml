@@ -40,3 +40,12 @@ goals:
 
   - label: "TCOPFLOW: Ramp constraint impact"
     goal: "Compare the TCOPFLOW solution with ramp coupling enabled vs disabled to quantify the cost of generator ramp constraints. Run the base case first, then try disabling coupling to see if cost decreases. Report the ramp constraint premium — the additional cost imposed by inter-temporal ramp limits."
+
+  - label: "SOPFLOW: Evaluate wind scenario robustness"
+    goal: "Using SOPFLOW with the wind scenario file, evaluate whether the grid can handle all wind generation scenarios simultaneously. Report the base-case dispatch cost, any scenarios where constraints are violated, and which buses are most affected by wind variability."
+
+  - label: "SOPFLOW: Find maximum wind penetration"
+    goal: "Find the maximum wind generation scaling factor such that all stochastic scenarios remain feasible with voltages within 0.95–1.05 p.u. and no line overloads. Use binary search with the scale_wind_scenario command and fresh mode."
+
+  - label: "SOPFLOW: Compare deterministic vs stochastic dispatch"
+    goal: "Using SOPFLOW, compare the base-case deterministic dispatch cost with the stochastic solution that accounts for all wind scenarios. Quantify how much additional generation reserve is needed in the stochastic formulation vs. a single-scenario OPFLOW run. Report the stochastic premium."

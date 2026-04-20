@@ -153,3 +153,93 @@ class TestSessionSaveLoad:
         )
         data = json.loads((save_dir / "session.json").read_text())
         assert data["format_version"] == SESSION_FORMAT_VERSION
+
+    def test_sopflow_scenario_override_roundtrip(self, tmp_path, sample_journal):
+        save_dir = tmp_path / "test_sopflow_session"
+        save_session(
+            save_dir=save_dir,
+            goal="find max wind penetration",
+            application="sopflow",
+            base_case_path=Path("/data/case9mod_gen3_wind.m"),
+            config_path=None,
+            journal=sample_journal,
+            steering_history=[],
+            active_steering_directives=[],
+            current_network=None,
+            total_prompt_tokens=0,
+            total_completion_tokens=0,
+            last_iteration=2,
+            sopflow_num_scenarios=10,
+            sopflow_scenario_override="/workdir/scenarios_iter_002/case9_10_scenarios.csv",
+        )
+        loaded = load_session(save_dir)
+        assert loaded["sopflow_num_scenarios"] == 10
+        assert loaded["sopflow_scenario_override"] == "/workdir/scenarios_iter_002/case9_10_scenarios.csv"
+
+    def test_sopflow_no_override_roundtrip(self, tmp_path, sample_journal):
+        save_dir = tmp_path / "test_sopflow_no_override"
+        save_session(
+            save_dir=save_dir,
+            goal="test",
+            application="sopflow",
+            base_case_path=Path("/data/case9mod_gen3_wind.m"),
+            config_path=None,
+            journal=sample_journal,
+            steering_history=[],
+            active_steering_directives=[],
+            current_network=None,
+            total_prompt_tokens=0,
+            total_completion_tokens=0,
+            last_iteration=0,
+        )
+        loaded = load_session(save_dir)
+        assert loaded["sopflow_scenario_override"] is None
+        assert loaded["sopflow_num_scenarios"] == 0
+
+    def test_tcopflow_profile_overrides_roundtrip(self, tmp_path, sample_journal):
+        save_dir = tmp_path / "test_tcopflow_session"
+        save_session(
+            save_dir=save_dir,
+            goal="find temporal loadability",
+            application="tcopflow",
+            base_case_path=Path("/data/case9mod.m"),
+            config_path=None,
+            journal=sample_journal,
+            steering_history=[],
+            active_steering_directives=[],
+            current_network=None,
+            total_prompt_tokens=0,
+            total_completion_tokens=0,
+            last_iteration=2,
+            tcopflow_period_data=[{"period": 0, "total_load_mw": 265.0}],
+            tcopflow_dT_min=15.0,
+            tcopflow_duration_min=60.0,
+            tcopflow_is_coupling=True,
+            tcopflow_profile_overrides={
+                "pload_profile": "/workdir/profiles_iter_002/case9_load_P.csv",
+                "qload_profile": "/workdir/profiles_iter_002/case9_load_Q.csv",
+            },
+        )
+        loaded = load_session(save_dir)
+        assert loaded["tcopflow_profile_overrides"] is not None
+        assert loaded["tcopflow_profile_overrides"]["pload_profile"] == "/workdir/profiles_iter_002/case9_load_P.csv"
+        assert loaded["tcopflow_profile_overrides"]["qload_profile"] == "/workdir/profiles_iter_002/case9_load_Q.csv"
+
+    def test_tcopflow_no_overrides_roundtrip(self, tmp_path, sample_journal):
+        save_dir = tmp_path / "test_tcopflow_no_overrides"
+        save_session(
+            save_dir=save_dir,
+            goal="test",
+            application="tcopflow",
+            base_case_path=Path("/data/case9mod.m"),
+            config_path=None,
+            journal=sample_journal,
+            steering_history=[],
+            active_steering_directives=[],
+            current_network=None,
+            total_prompt_tokens=0,
+            total_completion_tokens=0,
+            last_iteration=0,
+        )
+        loaded = load_session(save_dir)
+        assert loaded["tcopflow_profile_overrides"] is None

@@ -41,6 +41,9 @@ def save_session(
     tcopflow_dT_min: float = 0.0,
     tcopflow_duration_min: float = 0.0,
     tcopflow_is_coupling: bool = True,
+    sopflow_num_scenarios: int = 0,
+    sopflow_scenario_override: str | None = None,
+    tcopflow_profile_overrides: dict[str, str] | None = None,
 ) -> Path:
     """Save a search session to disk for later resumption.
 
@@ -93,6 +96,9 @@ def save_session(
         "tcopflow_dT_min": tcopflow_dT_min,
         "tcopflow_duration_min": tcopflow_duration_min,
         "tcopflow_is_coupling": tcopflow_is_coupling,
+        "sopflow_num_scenarios": sopflow_num_scenarios,
+        "sopflow_scenario_override": sopflow_scenario_override,
+        "tcopflow_profile_overrides": tcopflow_profile_overrides,
         "journal": {
             "entries": [asdict(e) for e in journal.entries],
             "objective_registry": journal.objective_registry.to_dict_list(),
@@ -164,6 +170,7 @@ def load_session(save_dir: Path) -> dict[str, Any]:
             feasibility_detail=entry_data.get("feasibility_detail", ""),
             solver=entry_data.get("solver", ""),
             num_steps=entry_data.get("num_steps", 0),
+            num_scenarios=entry_data.get("num_scenarios", 0),
         )
         journal_entries.append(entry)
 
@@ -211,4 +218,7 @@ def load_session(save_dir: Path) -> dict[str, Any]:
         "tcopflow_dT_min": raw.get("tcopflow_dT_min", 0.0),
         "tcopflow_duration_min": raw.get("tcopflow_duration_min", 0.0),
         "tcopflow_is_coupling": raw.get("tcopflow_is_coupling", True),
+        "sopflow_num_scenarios": raw.get("sopflow_num_scenarios", 0),
+        "sopflow_scenario_override": raw.get("sopflow_scenario_override"),
+        "tcopflow_profile_overrides": raw.get("tcopflow_profile_overrides"),
     }

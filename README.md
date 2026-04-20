@@ -50,7 +50,7 @@ The search journal tracks every iteration, providing the LLM with a history of w
 | **DCOPFLOW** | DC Optimal Power Flow — linearized approximation using phase angles and active power only. Faster than OPFLOW, useful for screening and contingency ranking | ✅ Fully supported |
 | **SCOPFLOW** | Security-Constrained OPF — finds a preventive dispatch that survives all contingencies in a `.cont` file. Requires a contingency file | ✅ Fully supported |
 | **TCOPFLOW** | Multi-Period OPF — time-coupled optimization with generator ramp constraints and load profiles. Requires P and Q load profile CSV files | ✅ Fully supported |
-| SOPFLOW | Stochastic OPF — optimization under uncertainty with scenario files | Planned (Phase 3) |
+| **SOPFLOW** | Stochastic OPF — two-stage optimization with wind generation scenarios. Requires a scenario CSV file and a network file with wind generators | ✅ Fully supported |
 | PFLOW | Power Flow — no optimization, LLM performs the search directly | Planned (Phase 4) |
 
 ### DCOPFLOW vs OPFLOW
@@ -88,6 +88,19 @@ TCOPFLOW solves a multi-period AC optimal power flow over a time horizon with ge
 - The launcher auto-selects profile files matching the base case name (e.g., `case9mod.m` → `case9_load_P.csv`)
 
 Load profile files follow the naming convention `<casename>_load_P.csv` / `<casename>_load_Q.csv` (see `data/README.md`). Select via CLI (`--app tcopflow --pload-profile data/case9_load_P.csv --qload-profile data/case9_load_Q.csv`) or in the launcher GUI (application dropdown + auto-matched profile selectors + temporal parameters).
+
+### SOPFLOW (Stochastic OPF)
+
+SOPFLOW solves a two-stage stochastic optimization: a first-stage (here-and-now) dispatch that must satisfy constraints across all wind scenarios simultaneously, plus per-scenario second-stage corrections:
+- Requires a **wind scenario CSV file** (via `--scenario-file`) with columns for each wind generator — standard load commands modify the `.m` file but do NOT change wind scenario data
+- Use `scale_wind_scenario` (command 13) to adjust wind penetration in the scenario CSV — e.g., `{"action": "scale_wind_scenario", "factor": 0.8}` reduces wind output by 20% across all scenarios
+- The network file must have wind generators defined (`gentype='W2'`, `genfuel='wind'`) — use a case like `case9mod_gen3_wind.m`
+- Two scenario file formats are supported: single-period (`scenario_nr, <wind_cols>, weight`) and multi-period (`sim_timestamp, scenario_nr, <wind_cols>`)
+- Results show the **first-stage base-case dispatch** — the operating point that the system commits to before knowing which wind scenario materialises
+- SOPFLOW supports both **IPOPT** (single-core, default) and **EMPAR** (multi-core via MPI) solvers
+- The launcher auto-selects scenario files matching the base case name (e.g., `case9mod_gen3_wind.m` → `case9_scenarios.csv`)
+
+Scenario files follow the naming convention `<casename>_scenarios.csv` / `<casename>_10_scenarios.csv` (see `data/README.md`). Select via CLI (`--app sopflow --scenario-file data/case9_10_scenarios.csv`) or in the launcher GUI (application dropdown + auto-matched scenario selector + solver/coupling options).
 
 ## Multi-Objective Tracking
 
@@ -245,6 +258,17 @@ llm-sim ./data/case9mod.m \
   --app tcopflow --pload-profile data/case9_load_P.csv \
   --qload-profile data/case9_load_Q.csv --tcopflow-duration 1.0 --tcopflow-dt 15
 
+# Stochastic OPF (requires wind scenario file and wind-enabled network)
+llm-sim ./data/case9mod_gen3_wind.m \
+  "Find the maximum wind penetration level before the system becomes infeasible" \
+  --app sopflow --scenario-file data/case9_10_scenarios.csv
+
+# Stochastic OPF with EMPAR solver (multi-core)
+llm-sim ./data/case9mod_gen3_wind.m \
+  "Find the maximum wind penetration level" \
+  --app sopflow --scenario-file data/case9_10_scenarios.csv \
+  --sopflow-solver EMPAR --np 4
+
 # Dry run (validate config without executing)
 python -m llm_sim ./data/case_ACTIVSg200.m "test goal" --dry-run
 ```
@@ -334,6 +358,9 @@ python -m pytest tests/test_scopflow.py -v
 
 # Run TCOPFLOW-specific tests
 python -m pytest tests/test_tcopflow.py -v
+
+# Run SOPFLOW-specific tests
+python -m pytest tests/test_sopflow.py -v
 
 # Run end-to-end tests (requires opflow binary)
 python -m pytest tests/test_e2e.py -v -m "not slow"

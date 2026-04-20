@@ -17,7 +17,7 @@ logger = logging.getLogger("llm_sim.engine.goal_classifier")
 _SYSTEM_PROMPT = (
     "You are an expert power systems analyst reviewing the results of an "
     "LLM-driven optimization search performed using an ExaGO application "
-    "(OPFLOW, DCOPFLOW, SCOPFLOW, or TCOPFLOW). "
+    "(OPFLOW, DCOPFLOW, SCOPFLOW, TCOPFLOW, or SOPFLOW). "
     "Provide a structured analytical summary of the search."
 )
 
@@ -58,7 +58,9 @@ def build_classification_prompts(
         stats: dict from ``SearchJournal.summary_stats()`` (before any override).
         journal_formatted: Output of ``SearchJournal.format_detailed()``.
         total_tokens: Total prompt + completion tokens used during the search.
-        application: ExaGO application name (e.g., "opflow", "tcopflow").
+        objective_registry: Optional list of tracked objective dicts.
+        preference_history: Optional list of preference change dicts.
+        application: ExaGO application name (e.g., "opflow", "tcopflow", "sopflow").
 
     Returns:
         Tuple of (system_prompt, user_prompt) strings.
@@ -76,6 +78,16 @@ def build_classification_prompts(
         "scopflow": (
             "This search used SCOPFLOW (Security-Constrained OPF). Results "
             "reflect base-case N-1 security analysis."
+        ),
+        "sopflow": (
+            "This search used SOPFLOW (Stochastic Optimal Power Flow). "
+            "SOPFLOW optimizes a two-stage problem: a first-stage base-case "
+            "dispatch plus per-scenario second-stage corrections for wind "
+            "generation uncertainty. The objective value is the expected cost "
+            "across all scenarios (weighted base-case cost). Feasibility means "
+            "all scenarios satisfy network constraints simultaneously. "
+            "When identifying the best iteration, consider how well the dispatch "
+            "handles wind variability across all scenarios."
         ),
     }
     app_context = _APP_CONTEXT.get(application)
