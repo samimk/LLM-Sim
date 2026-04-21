@@ -282,6 +282,7 @@ def build_config_overrides(
     scenario_file: str | Path | None = None,
     sopflow_solver: str = "IPOPT",
     sopflow_iscoupling: int = 0,
+    benchmark_opflow: bool = False,
 ) -> dict[str, Any]:
     """Build a CLI-style overrides dict from GUI widget values.
 
@@ -359,6 +360,9 @@ def build_config_overrides(
 
     if sopflow_iscoupling != 0:
         overrides["search.sopflow_iscoupling"] = sopflow_iscoupling
+
+    if benchmark_opflow:
+        overrides["search.benchmark_opflow"] = True
 
     return overrides
 

@@ -149,6 +149,7 @@ class SearchJournal:
     def __init__(self) -> None:
         self._entries: list[JournalEntry] = []
         self.objective_registry = ObjectiveRegistry()
+        self.benchmark_result: Optional[dict] = None
 
     def add_entry(self, entry: JournalEntry) -> None:
         """Append an entry to the journal."""
@@ -523,6 +524,8 @@ class SearchJournal:
             "objective_registry": self.objective_registry.to_dict_list(),
             "preference_history": self.objective_registry.history,
         }
+        if self.benchmark_result is not None:
+            data["benchmark_result"] = self.benchmark_result
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         logger.info("Journal exported to %s (%d entries)", path, len(self._entries))
 

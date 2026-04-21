@@ -55,6 +55,40 @@ def _bus_limits_from_network(net) -> dict[int, tuple[float, float]]:
     return {b.bus_i: (b.Vmin, b.Vmax) for b in net.buses}
 
 
+def _benchmark_to_dict(bresult) -> dict:
+    """Convert a BenchmarkResult to a serializable dict."""
+    from llm_sim.engine.benchmark import DispatchComparison, LoadabilityResult
+    d: dict = {
+        "opflow_converged": bresult.opflow_converged,
+        "opflow_objective": bresult.opflow_objective,
+        "pflow_best_computed_cost": bresult.pflow_best_computed_cost,
+        "cost_gap_pct": bresult.cost_gap_pct,
+        "cost_gap_abs": bresult.cost_gap_abs,
+        "summary_text": bresult.summary_text,
+        "error": bresult.error,
+    }
+    if bresult.dispatch_comparison:
+        d["dispatch_comparison"] = [
+            {
+                "bus": dc.bus,
+                "fuel": dc.fuel,
+                "opflow_pg": dc.opflow_pg,
+                "pflow_pg": dc.pflow_pg,
+                "delta": dc.delta,
+                "opflow_pmax": dc.opflow_pmax,
+            }
+            for dc in bresult.dispatch_comparison
+        ]
+    if bresult.loadability is not None:
+        d["loadability"] = {
+            "opflow_max_factor": bresult.loadability.opflow_max_factor,
+            "pflow_max_factor": bresult.loadability.pflow_max_factor,
+            "gap_pct": bresult.loadability.gap_pct,
+            "detail": bresult.loadability.detail,
+        }
+    return d
+
+
 @dataclass
 class SearchSession:
     """Complete record of a search session."""
@@ -81,6 +115,7 @@ class SearchSession:
     tcopflow_duration_min: float = 0.0
     tcopflow_is_coupling: bool = True
     sopflow_num_scenarios: int = 0
+    benchmark_result: Optional[dict] = None
 
 
 class AgentLoopController:
@@ -1382,6 +1417,31 @@ class AgentLoopController:
                 recs = goal_classification["recommended_solutions"]
                 if len(recs) > 1:
                     print(f"  Recommended solutions: iterations {recs}")
+
+        # PFLOW vs OPFLOW benchmark
+        if (
+            self._config.search.application == "pflow"
+            and self._config.search.benchmark_opflow
+        ):
+            try:
+                from llm_sim.engine.benchmark import run_pflow_vs_opflow_benchmark
+
+                best_iter_num = stats.get("best_iteration")
+                goal_type_str = stats.get("goal_type") or goal_type
+                pflow_best = self._opflow_results_cache.get(best_iter_num) if best_iter_num is not None else None
+                bresult = run_pflow_vs_opflow_benchmark(
+                    base_case_path=self._config.search.base_case,
+                    pflow_journal=self._journal,
+                    config=self._config,
+                    goal_type=goal_type_str,
+                    pflow_best_result=pflow_best,
+                )
+                session.benchmark_result = _benchmark_to_dict(bresult)
+                self._journal.benchmark_result = _benchmark_to_dict(bresult)
+                print()
+                print(bresult.summary_text)
+            except Exception as exc:
+                logger.warning("PFLOW vs OPFLOW benchmark failed: %s", exc)
 
         # Save journal if configured
         if self._config.output.save_journal:

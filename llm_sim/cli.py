@@ -168,6 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Parse config and validate without running (for testing setup)",
     )
     parser.add_argument(
+        "--benchmark-opflow",
+        action="store_true",
+        default=None,
+        help="After PFLOW search, run OPFLOW on the base case and compare results",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -214,6 +220,8 @@ def _cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
         overrides["exago.mpi_np"] = args.mpi_np
     if args.search_mode is not None:
         overrides["search.search_mode"] = args.search_mode
+    if getattr(args, "benchmark_opflow", None):
+        overrides["search.benchmark_opflow"] = True
     if args.verbose is not None:
         overrides["output.verbose"] = args.verbose
     # base_case is set via positional arg (may be None if --resume is used)

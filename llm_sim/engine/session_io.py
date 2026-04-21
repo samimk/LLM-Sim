@@ -44,6 +44,7 @@ def save_session(
     sopflow_num_scenarios: int = 0,
     sopflow_scenario_override: str | None = None,
     tcopflow_profile_overrides: dict[str, str] | None = None,
+    benchmark_result: dict | None = None,
 ) -> Path:
     """Save a search session to disk for later resumption.
 
@@ -99,6 +100,7 @@ def save_session(
         "sopflow_num_scenarios": sopflow_num_scenarios,
         "sopflow_scenario_override": sopflow_scenario_override,
         "tcopflow_profile_overrides": tcopflow_profile_overrides,
+        "benchmark_result": benchmark_result,
         "journal": {
             "entries": [asdict(e) for e in journal.entries],
             "objective_registry": journal.objective_registry.to_dict_list(),
@@ -221,4 +223,5 @@ def load_session(save_dir: Path) -> dict[str, Any]:
         "sopflow_num_scenarios": raw.get("sopflow_num_scenarios", 0),
         "sopflow_scenario_override": raw.get("sopflow_scenario_override"),
         "tcopflow_profile_overrides": raw.get("tcopflow_profile_overrides"),
+        "benchmark_result": raw.get("benchmark_result"),
     }

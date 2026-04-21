@@ -282,6 +282,12 @@ class ReportGenerator:
             story.append(PageBreak())
             story.extend(self._build_steering_section(steering_history))
 
+        # PFLOW vs OPFLOW benchmark section
+        benchmark_result = getattr(session, "benchmark_result", None)
+        if benchmark_result:
+            story.append(PageBreak())
+            story.extend(self._build_benchmark_section(benchmark_result))
+
         # Multi-objective section (only when applicable)
         if (
             hasattr(session.journal, "objective_registry")
@@ -485,6 +491,7 @@ class ReportGenerator:
             "scopflow": "Security-Constrained OPF (SCOPFLOW)",
             "tcopflow": "Multi-Period OPF (TCOPFLOW)",
             "sopflow": "Stochastic OPF (SOPFLOW)",
+            "pflow": "Power Flow (PFLOW)",
         }
         app_label = _APP_LABELS.get(session.application, session.application)
         elements.append(Paragraph(
@@ -1076,6 +1083,143 @@ class ReportGenerator:
                     f"<b>Recommended tradeoff solutions:</b> iterations {recs}",
                     s["body"],
                 ))
+
+        return elements
+
+    # ── PFLOW vs OPFLOW Benchmark ────────────────────────────────────────
+
+    def _build_benchmark_section(self, benchmark_result: dict) -> list:
+        """Build a PFLOW vs OPFLOW benchmark section for the PDF report."""
+        s = self._styles
+        elements: list = []
+        elements.append(Paragraph("PFLOW vs OPFLOW Benchmark", s["heading1"]))
+        elements.append(Paragraph(
+            "Comparison of LLM-driven PFLOW search results against the "
+            "OPFLOW optimal solution. OPFLOW finds the mathematically optimal "
+            "dispatch; PFLOW uses Newton-Raphson power flow with LLM-guided "
+            "modifications, so cost is computed from the resulting dispatch "
+            "using generator cost curves.",
+            s["body"],
+        ))
+        elements.append(Spacer(1, 0.5 * cm))
+
+        if benchmark_result.get("error"):
+            elements.append(Paragraph(
+                f"<b>Benchmark error:</b> {self._escape_xml(benchmark_result['error'])}",
+                s["body"],
+            ))
+            return elements
+
+        # Key metrics table
+        header = ["Metric", "Value"]
+        rows = [header]
+
+        if benchmark_result.get("opflow_converged"):
+            rows.append(["OPFLOW converged", "Yes"])
+        else:
+            rows.append(["OPFLOW converged", "No"])
+
+        opflow_obj = benchmark_result.get("opflow_objective")
+        if opflow_obj is not None:
+            rows.append(["OPFLOW optimal cost", f"${opflow_obj:,.2f}"])
+
+        pflow_cost = benchmark_result.get("pflow_best_computed_cost")
+        if pflow_cost is not None:
+            rows.append(["Best PFLOW computed cost", f"${pflow_cost:,.2f}"])
+
+        cost_gap_pct = benchmark_result.get("cost_gap_pct")
+        if cost_gap_pct is not None:
+            sign = "+" if cost_gap_pct >= 0 else ""
+            rows.append(["Cost gap", f"{sign}{cost_gap_pct:.2f}%"])
+
+        cost_gap_abs = benchmark_result.get("cost_gap_abs")
+        if cost_gap_abs is not None:
+            sign = "+" if cost_gap_abs >= 0 else ""
+            rows.append(["Cost difference", f"{sign}${cost_gap_abs:,.2f}"])
+
+        col_widths = [10 * cm, 7 * cm]
+        table = Table(rows, colWidths=col_widths)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3498db")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), self._font_bold),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("FONTNAME", (0, 1), (-1, -1), self._font),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
+            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 0.5 * cm))
+
+        # Dispatch comparison table
+        dispatch_comparison = benchmark_result.get("dispatch_comparison", [])
+        if dispatch_comparison:
+            elements.append(Paragraph("Dispatch Comparison (top 10 by |delta|)", s["heading2"]))
+            dc_header = ["Gen Bus", "Fuel", "OPFLOW MW", "PFLOW MW", "Delta MW", "% of Pmax"]
+            dc_rows = [dc_header]
+            for dc in dispatch_comparison[:10]:
+                pct_pmax = (dc["delta"] / dc["opflow_pmax"] * 100) if dc["opflow_pmax"] > 0 else 0
+                sign = "+" if dc["delta"] >= 0 else ""
+                dc_rows.append([
+                    str(dc["bus"]),
+                    dc["fuel"],
+                    f"{dc['opflow_pg']:.2f}",
+                    f"{dc['pflow_pg']:.2f}",
+                    f"{sign}{dc['delta']:.2f}",
+                    f"{sign}{pct_pmax:.1f}%",
+                ])
+            dc_widths = [2 * cm, 2.5 * cm, 3 * cm, 3 * cm, 3 * cm, 3.5 * cm]
+            dc_table = Table(dc_rows, colWidths=dc_widths)
+            dc_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3498db")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), self._font_bold),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("FONTNAME", (0, 1), (-1, -1), self._font),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
+                ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            elements.append(dc_table)
+            elements.append(Spacer(1, 0.5 * cm))
+
+        # Loadability comparison
+        loadability = benchmark_result.get("loadability")
+        if loadability:
+            elements.append(Paragraph("Loadability Comparison", s["heading2"]))
+            load_rows = [
+                ["Metric", "Value"],
+            ]
+            if loadability.get("opflow_max_factor") is not None:
+                load_rows.append(["OPFLOW max load factor", f"{loadability['opflow_max_factor']:.4f}"])
+            if loadability.get("pflow_max_factor") is not None:
+                load_rows.append(["PFLOW max load factor", f"{loadability['pflow_max_factor']:.4f}"])
+            if loadability.get("gap_pct") is not None:
+                load_rows.append(["Boundary gap", f"{loadability['gap_pct']:+.2f}%"])
+            if loadability.get("detail"):
+                load_rows.append(["Detail", loadability["detail"]])
+
+            load_table = Table(load_rows, colWidths=[8 * cm, 9 * cm])
+            load_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3498db")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), self._font_bold),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("FONTNAME", (0, 1), (-1, -1), self._font),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            elements.append(load_table)
 
         return elements
 

@@ -125,6 +125,7 @@ class SearchConfig:
     scenario_file: Optional[Path] = None  # Wind scenario CSV for SOPFLOW
     sopflow_solver: str = "IPOPT"  # Solver for SOPFLOW: IPOPT or EMPAR
     sopflow_iscoupling: int = 0  # Coupling between first/second stage (0=off, 1=on) for SOPFLOW
+    benchmark_opflow: bool = False  # Run OPFLOW benchmark after PFLOW search
 
 
 @dataclass(frozen=True)

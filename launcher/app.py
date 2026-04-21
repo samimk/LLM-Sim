@@ -97,11 +97,12 @@ def get_network_info(file_path: str) -> dict:
 # ── Start Search Logic ───────────────────────────────────────────────────────
 
 def start_search(base_case_path, goal, backend, model, temperature,
-                  application, mode, max_iterations, search_mode="standard",
-                  ctgc_file=None, mpi_np=1,
-                  pload_profile=None, qload_profile=None, wind_profile=None,
-                  tcopflow_duration=1.0, tcopflow_dT=60.0, tcopflow_iscoupling=1,
-                  scenario_file=None, sopflow_solver="IPOPT", sopflow_iscoupling=0):
+                   application, mode, max_iterations, search_mode="standard",
+                   ctgc_file=None, mpi_np=1,
+                   pload_profile=None, qload_profile=None, wind_profile=None,
+                   tcopflow_duration=1.0, tcopflow_dT=60.0, tcopflow_iscoupling=1,
+                   scenario_file=None, sopflow_solver="IPOPT", sopflow_iscoupling=0,
+                   benchmark_opflow=False):
     """Initialize and start a new search."""
     # Validate base case still exists
     if not Path(base_case_path).exists():
@@ -136,6 +137,7 @@ def start_search(base_case_path, goal, backend, model, temperature,
         scenario_file=scenario_file,
         sopflow_solver=sopflow_solver,
         sopflow_iscoupling=sopflow_iscoupling,
+        benchmark_opflow=benchmark_opflow,
     )
 
     if st.session_state.session_manager is None:
@@ -397,6 +399,16 @@ def render_sidebar() -> dict:
         if application not in ("scopflow", "sopflow"):
             mpi_np = 1
 
+        benchmark_opflow = st.checkbox(
+            "Benchmark vs OPFLOW",
+            value=False,
+            disabled=disabled or application != "pflow",
+            help="After PFLOW search, run OPFLOW on the base case and compare "
+            "cost, dispatch, and loadability results.",
+        )
+        if application != "pflow":
+            benchmark_opflow = False
+
         # ── Search Goal ──────────────────────────────────────────────────
         st.header("🎯 Search Goal")
         example_goals = load_example_goals()
@@ -458,6 +470,7 @@ def render_sidebar() -> dict:
                 scenario_file=scenario_file,
                 sopflow_solver=sopflow_solver,
                 sopflow_iscoupling=sopflow_iscoupling,
+                benchmark_opflow=benchmark_opflow,
             )
             st.rerun()
 
@@ -1042,6 +1055,51 @@ def _render_overview_tab(session):
     # Show goal achievement if available
     if gc and gc.get("best_iteration_rationale"):
         st.info(f"**Goal achievement:** {gc['best_iteration_rationale']}")
+
+    # PFLOW vs OPFLOW Benchmark
+    br = session.benchmark_result
+    if br:
+        with st.expander("📊 PFLOW vs OPFLOW Benchmark", expanded=False):
+            if br.get("error"):
+                st.warning(f"Benchmark error: {br['error']}")
+            else:
+                bc1, bc2, bc3 = st.columns(3)
+                if br.get("opflow_objective") is not None:
+                    bc1.metric("OPFLOW Optimal Cost", f"${br['opflow_objective']:,.2f}")
+                if br.get("pflow_best_computed_cost") is not None:
+                    bc2.metric("Best PFLOW Cost", f"${br['pflow_best_computed_cost']:,.2f}")
+                if br.get("cost_gap_pct") is not None:
+                    sign = "+" if br["cost_gap_pct"] >= 0 else ""
+                    bc3.metric("Cost Gap", f"{sign}{br['cost_gap_pct']:.2f}%")
+
+                dc = br.get("dispatch_comparison", [])
+                if dc:
+                    st.markdown("**Dispatch comparison** (sorted by |delta|):")
+                    dc_rows = []
+                    for d in dc[:10]:
+                        pct = (d["delta"] / d["opflow_pmax"] * 100) if d.get("opflow_pmax", 0) > 0 else 0
+                        dc_rows.append({
+                            "Gen bus": d["bus"],
+                            "Fuel": d["fuel"],
+                            "OPFLOW MW": f"{d['opflow_pg']:.2f}",
+                            "PFLOW MW": f"{d['pflow_pg']:.2f}",
+                            "Delta MW": f"{d['delta']:+.2f}",
+                            "% of Pmax": f"{pct:+.1f}%",
+                        })
+                    st.dataframe(
+                        pd.DataFrame(dc_rows), width="stretch", hide_index=True,
+                    )
+
+                loadability = br.get("loadability")
+                if loadability:
+                    st.markdown("**Loadability comparison:**")
+                    lc1, lc2, lc3 = st.columns(3)
+                    if loadability.get("opflow_max_factor") is not None:
+                        lc1.metric("OPFLOW Max Factor", f"{loadability['opflow_max_factor']:.4f}")
+                    if loadability.get("pflow_max_factor") is not None:
+                        lc2.metric("PFLOW Max Factor", f"{loadability['pflow_max_factor']:.4f}")
+                    if loadability.get("gap_pct") is not None:
+                        lc3.metric("Boundary Gap", f"{loadability['gap_pct']:+.2f}%")
 
     # Base Case vs Best Solution comparison table
     comparison_label = "Base Case vs Best Solution"
