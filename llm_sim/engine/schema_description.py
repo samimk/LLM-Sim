@@ -39,14 +39,16 @@ Available modification commands (JSON format):
    Optional: gen_id (int)
    Example: {"action": "set_gen_dispatch", "bus": 189, "Pg": 400.0}
 
-6. set_gen_voltage — Set generator voltage setpoint (initial guess only)
-   Required: bus (int), Vg (float, pu — reasonable range 0.8–1.2)
-   Optional: gen_id (int)
-   Example: {"action": "set_gen_voltage", "bus": 189, "Vg": 1.05}
-   WARNING: In OPFLOW, bus voltages are optimization decision variables — the
-   solver will override this setpoint with its own optimal value. To actually
-   constrain bus voltages in OPF, use set_bus_vlimits (command 10) to set
-   Vmin/Vmax on the bus. This command is mainly useful for PFLOW applications.
+6. set_gen_voltage — Set generator voltage setpoint
+    Required: bus (int), Vg (float, pu — reasonable range 0.8–1.2)
+    Optional: gen_id (int)
+    Example: {"action": "set_gen_voltage", "bus": 189, "Vg": 1.05}
+    WARNING: In OPFLOW/SCOPFLOW/TCOPFLOW/SOPFLOW, bus voltages are optimization
+    decision variables — the solver will override this setpoint with its own optimal
+    value. To actually constrain bus voltages in OPF, use set_bus_vlimits (command 10)
+    to set Vmin/Vmax on the bus. In PFLOW, this command directly constrains bus
+    voltage — the solver uses Vg as a fixed setpoint, making it the primary voltage
+    control mechanism.
 
 7. set_branch_status — Enable or disable a branch
    Required: fbus (int), tbus (int), status (int: 1=in-service, 0=out-of-service)
@@ -91,6 +93,27 @@ Available modification commands (JSON format):
       sim_timestamp, weight). This is the correct way to adjust wind generation
       variability in SOPFLOW, since SOPFLOW reads wind scenarios from the CSV
       file, not the .m case file.
+
+  14. set_tap_ratio — Set transformer tap ratio
+      Required: fbus (int), tbus (int), ratio (float, typical range 0.9–1.1)
+      Optional: ckt (int, 0-based circuit index for parallel branches)
+      Example: {"action": "set_tap_ratio", "fbus": 45, "tbus": 55, "ratio": 1.05}
+      Only applies to branches that are transformers (ratio ≠ 0 in the base
+      network). Setting ratio on a non-transformer line (ratio=0) is rejected.
+
+  15. set_shunt_susceptance — Modify shunt susceptance at a bus
+      Required: bus (int), Bs (float, MVA at rated voltage — positive = capacitive)
+      Example: {"action": "set_shunt_susceptance", "bus": 10, "Bs": 0.5}
+      Positive Bs adds capacitive susceptance (raises voltage), negative Bs adds
+      inductive susceptance (lowers voltage). Particularly useful for PFLOW voltage
+      control.
+
+  16. set_phase_shift_angle — Set phase shifter angle
+      Required: fbus (int), tbus (int), angle (float, degrees — typical range -60 to 60)
+      Optional: ckt (int, 0-based circuit index for parallel branches)
+      Example: {"action": "set_phase_shift_angle", "fbus": 121, "tbus": 187, "angle": 5.0}
+      Only applies to branches that are phase shifters (angle ≠ 0 in the base
+      network). Setting angle on a non-phase-shifter branch (angle=0) is rejected.
 
 Return your commands as a JSON object with a "commands" key containing a list:
 {"commands": [{"action": "...", ...}, {"action": "...", ...}]}

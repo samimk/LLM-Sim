@@ -95,3 +95,32 @@ class OPFLOWResult:
     #   marginal   = NOT converged but no structural violations, solution may be usable
     ipopt_exit_status: str = ""
     feasibility_detail: str = ""
+
+    def compute_generation_cost(self, gencost: list) -> float:
+        """Compute total generation cost from dispatch and cost curves.
+
+        Uses the MATPOWER polynomial cost model (model=2):
+          cost = c2*Pg^2 + c1*Pg + c0
+        where coefficients are ordered as [c2, c1, c0] (highest degree first).
+
+        Args:
+            gencost: List of GenCost objects aligned with generators by index.
+
+        Returns:
+            Total generation cost, or 0.0 if gencost data is unavailable.
+        """
+        if not gencost or not self.generators:
+            return 0.0
+
+        total_cost = 0.0
+        for i, gen in enumerate(self.generators):
+            if gen.status != 1 or i >= len(gencost):
+                continue
+            cost_entry = gencost[i]
+            if cost_entry.model != 2 or len(cost_entry.coeffs) < 3:
+                continue
+            c2, c1, c0 = cost_entry.coeffs[0], cost_entry.coeffs[1], cost_entry.coeffs[2]
+            pg = gen.Pg
+            total_cost += c2 * pg ** 2 + c1 * pg + c0
+
+        return total_cost

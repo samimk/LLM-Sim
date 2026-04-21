@@ -134,10 +134,53 @@ class ScaleWindScenario:
     factor: float
 
 
+@dataclass
+class SetTapRatio:
+    """Set transformer tap ratio for a branch.
+
+    Only applies to branches that are transformers (ratio != 0 in the base
+    network). Setting the tap ratio on a non-transformer line (ratio == 0)
+    is rejected as invalid.
+    """
+
+    fbus: int
+    tbus: int
+    ratio: float
+    ckt: Optional[int] = None
+
+
+@dataclass
+class SetShuntSusceptance:
+    """Set shunt susceptance at a bus.
+
+    Modifies the Bs (shunt susceptance) field of the specified bus.
+    Positive Bs adds capacitive susceptance; negative Bs adds inductive.
+    """
+
+    bus: int
+    Bs: float
+
+
+@dataclass
+class SetPhaseShiftAngle:
+    """Set phase shifter angle for a branch.
+
+    Only applies to branches that are phase shifters (angle != 0 in the
+    base network). Setting the angle on a non-phase-shifter branch (angle == 0)
+    is rejected as invalid.
+    """
+
+    fbus: int
+    tbus: int
+    angle: float
+    ckt: Optional[int] = None
+
+
 ModCommand = Union[
     SetLoad, ScaleLoad, ScaleAllLoads, SetGenStatus, SetGenDispatch,
     SetGenVoltage, SetBranchStatus, SetBranchRate, SetCostCoeffs,
     SetBusVLimits, SetAllBusVLimits, ScaleLoadProfile, ScaleWindScenario,
+    SetTapRatio, SetShuntSusceptance, SetPhaseShiftAngle,
 ]
 
 # Map action names to command classes and their required fields
@@ -155,6 +198,9 @@ _COMMAND_MAP: dict[str, tuple[type, set[str]]] = {
     "set_all_bus_vlimits": (SetAllBusVLimits, set()),
     "scale_load_profile": (ScaleLoadProfile, {"factor"}),
     "scale_wind_scenario": (ScaleWindScenario, {"factor"}),
+    "set_tap_ratio": (SetTapRatio, {"fbus", "tbus", "ratio"}),
+    "set_shunt_susceptance": (SetShuntSusceptance, {"bus", "Bs"}),
+    "set_phase_shift_angle": (SetPhaseShiftAngle, {"fbus", "tbus", "angle"}),
 }
 
 

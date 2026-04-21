@@ -23,6 +23,9 @@ from llm_sim.engine.commands import (
     SetGenStatus,
     SetGenVoltage,
     SetLoad,
+    SetPhaseShiftAngle,
+    SetShuntSusceptance,
+    SetTapRatio,
 )
 from llm_sim.engine.validation import validate_command
 from llm_sim.parsers.matpower_model import MATNetwork
@@ -79,7 +82,7 @@ def _branch_index_in_network(net: MATNetwork, fbus: int, tbus: int, ckt: int | N
     return matching[idx]
 
 
-def _apply_one(cmd: ModCommand, net: MATNetwork) -> str:
+def _apply_one(cmd: ModCommand, net: MATNetwork, application: str | None = None) -> str:
     """Apply a single command to *net* (mutating) and return a description."""
 
     if isinstance(cmd, SetLoad):
@@ -130,6 +133,8 @@ def _apply_one(cmd: ModCommand, net: MATNetwork) -> str:
     if isinstance(cmd, SetGenVoltage):
         gi = _gen_index_in_network(net, cmd.bus, cmd.gen_id)
         net.generators[gi].Vg = cmd.Vg
+        if application == "pflow":
+            return f"Set generator at bus {cmd.bus} Vg={cmd.Vg} pu (constrains bus voltage)"
         return f"Set generator at bus {cmd.bus} Vg={cmd.Vg} pu (initial guess only)"
 
     if isinstance(cmd, SetBranchStatus):
@@ -145,11 +150,28 @@ def _apply_one(cmd: ModCommand, net: MATNetwork) -> str:
 
     if isinstance(cmd, SetCostCoeffs):
         gi = _gen_index_in_network(net, cmd.bus, cmd.gen_id)
-        # Find matching gencost (same index as generator)
         if gi < len(net.gencost):
             net.gencost[gi].coeffs = list(cmd.coeffs)
             net.gencost[gi].ncost = len(cmd.coeffs)
         return f"Set cost coefficients for generator at bus {cmd.bus}: {cmd.coeffs}"
+
+    if isinstance(cmd, SetTapRatio):
+        bi = _branch_index_in_network(net, cmd.fbus, cmd.tbus, cmd.ckt)
+        old_ratio = net.branches[bi].ratio
+        net.branches[bi].ratio = cmd.ratio
+        return f"Set tap ratio for branch {cmd.fbus}-{cmd.tbus}: {old_ratio} -> {cmd.ratio}"
+
+    if isinstance(cmd, SetShuntSusceptance):
+        bus = _find_bus(net, cmd.bus)
+        old_bs = bus.Bs
+        bus.Bs = cmd.Bs
+        return f"Set shunt susceptance at bus {cmd.bus}: {old_bs} -> {cmd.Bs}"
+
+    if isinstance(cmd, SetPhaseShiftAngle):
+        bi = _branch_index_in_network(net, cmd.fbus, cmd.tbus, cmd.ckt)
+        old_angle = net.branches[bi].angle
+        net.branches[bi].angle = cmd.angle
+        return f"Set phase shift angle for branch {cmd.fbus}-{cmd.tbus}: {old_angle} -> {cmd.angle} deg"
 
     if isinstance(cmd, SetBusVLimits):
         bus = _find_bus(net, cmd.bus)
@@ -183,6 +205,12 @@ def _apply_one(cmd: ModCommand, net: MATNetwork) -> str:
 _SET_GEN_VOLTAGE_OPF_WARNING = (
     "set_gen_voltage only sets the initial guess; OPFLOW will override it with "
     "the optimal voltage. Use set_bus_vlimits to enforce voltage constraints in OPF."
+)
+
+_SET_GEN_VOLTAGE_PFLOW_NOTE = (
+    "In PFLOW, set_gen_voltage directly constrains the bus voltage — the solver "
+    "uses this as a fixed setpoint, not an initial guess. This is the primary "
+    "mechanism for voltage control in power flow analysis."
 )
 
 _DCOPFLOW_VOLTAGE_CMD_TYPES = (SetGenVoltage, SetBusVLimits, SetAllBusVLimits)
@@ -433,7 +461,11 @@ def apply_modifications(
             report.warnings.append(_SET_GEN_VOLTAGE_OPF_WARNING)
             logger.warning(_SET_GEN_VOLTAGE_OPF_WARNING)
 
-        desc = _apply_one(cmd, modified)
+        if isinstance(cmd, SetGenVoltage) and application == "pflow":
+            report.warnings.append(_SET_GEN_VOLTAGE_PFLOW_NOTE)
+            logger.info(_SET_GEN_VOLTAGE_PFLOW_NOTE)
+
+        desc = _apply_one(cmd, modified, application=application)
         report.applied.append((cmd, desc))
         logger.info("Applied: %s", desc)
 

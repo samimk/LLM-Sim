@@ -32,3 +32,4 @@ configs/local_config.yaml
 .claude/
 /prompts/
 opencode.md
+AGENTS.md

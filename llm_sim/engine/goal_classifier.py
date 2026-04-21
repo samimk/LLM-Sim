@@ -17,7 +17,7 @@ logger = logging.getLogger("llm_sim.engine.goal_classifier")
 _SYSTEM_PROMPT = (
     "You are an expert power systems analyst reviewing the results of an "
     "LLM-driven optimization search performed using an ExaGO application "
-    "(OPFLOW, DCOPFLOW, SCOPFLOW, TCOPFLOW, or SOPFLOW). "
+    "(OPFLOW, DCOPFLOW, SCOPFLOW, TCOPFLOW, SOPFLOW, or PFLOW). "
     "Provide a structured analytical summary of the search."
 )
 
@@ -88,6 +88,19 @@ def build_classification_prompts(
             "all scenarios satisfy network constraints simultaneously. "
             "When identifying the best iteration, consider how well the dispatch "
             "handles wind variability across all scenarios."
+        ),
+        "pflow": (
+            "This search used PFLOW (AC Power Flow — analysis, not optimization). "
+            "PFLOW does NOT minimise cost — it solves the power flow equations for a "
+            "given network state. The 'computed generation cost' is calculated from the "
+            "dispatch multiplied by cost curves; it is NOT an optimised objective. "
+            "The LLM was the optimiser, proposing changes and evaluating feasibility. "
+            "When identifying the best iteration, consider: feasibility (CONVERGED vs "
+            "DID NOT CONVERGE), voltage profile quality, line loading, and the computed "
+            "generation cost as a secondary metric. For feasibility_boundary searches, "
+            "the best iteration is the feasible one closest to the boundary (or the "
+            "last feasible iteration before infeasibility). For cost-focused searches, "
+            "the best iteration has the lowest computed cost among feasible results."
         ),
     }
     app_context = _APP_CONTEXT.get(application)

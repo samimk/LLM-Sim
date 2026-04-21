@@ -319,6 +319,7 @@ class AgentLoopController:
                 is_coupling=self._tcopflow_is_coupling,
                 period_data=self._tcopflow_period_data if self._tcopflow_period_data else None,
                 num_scenarios=self._sopflow_num_scenarios,
+                gencost=self._base_network.gencost if self._config.search.application == "pflow" else None,
             )
             self._base_opflow_result = opflow
             self._opflow_results_cache[0] = opflow
@@ -333,10 +334,17 @@ class AgentLoopController:
                 num_steps=self._tcopflow_num_steps,
                 num_scenarios=self._sopflow_num_scenarios,
             )
-            self._print(
-                f"[Iter 0] Base case: {opflow.convergence_status}, "
-                f"cost=${opflow.objective_value:,.2f}"
-            )
+            if self._config.search.application == "pflow":
+                computed_cost = opflow.compute_generation_cost(self._base_network.gencost)
+                self._print(
+                    f"[Iter 0] Base case: {opflow.convergence_status}, "
+                    f"computed cost=${computed_cost:,.2f}"
+                )
+            else:
+                self._print(
+                    f"[Iter 0] Base case: {opflow.convergence_status}, "
+                    f"cost=${opflow.objective_value:,.2f}"
+                )
         else:
             self._latest_results_text = None
             self._journal.add_from_results(
@@ -657,13 +665,22 @@ class AgentLoopController:
                 is_coupling=self._tcopflow_is_coupling,
                 period_data=self._tcopflow_period_data if self._tcopflow_period_data else None,
                 num_scenarios=self._sopflow_num_scenarios,
+                gencost=self._current_network.gencost if self._config.search.application == "pflow" else None,
             )
             self._current_network = modified_net
-            self._print(
-                f"[Iter {iteration}] Simulation completed in "
-                f"{sim_result.elapsed_seconds:.2f}s — "
-                f"{opflow.convergence_status}, cost=${opflow.objective_value:,.2f}"
-            )
+            if self._config.search.application == "pflow":
+                computed_cost = opflow.compute_generation_cost(modified_net.gencost)
+                self._print(
+                    f"[Iter {iteration}] Simulation completed in "
+                    f"{sim_result.elapsed_seconds:.2f}s — "
+                    f"{opflow.convergence_status}, computed cost=${computed_cost:,.2f}"
+                )
+            else:
+                self._print(
+                    f"[Iter {iteration}] Simulation completed in "
+                    f"{sim_result.elapsed_seconds:.2f}s — "
+                    f"{opflow.convergence_status}, cost=${opflow.objective_value:,.2f}"
+                )
         else:
             self._latest_results_text = None
             error_msg = sim_result.error_message or "unknown error"
@@ -978,7 +995,13 @@ class AgentLoopController:
                 if g.status == 1:
                     fuel = g.fuel or "unknown"
                     fuel_mw[fuel] += g.Pg
-            lines = [f"Generation cost breakdown (total: ${opf.objective_value:,.2f}):"]
+            if self._config.search.application == "pflow":
+                computed_cost = opf.compute_generation_cost(
+                    self._current_network.gencost if self._current_network else self._base_network.gencost
+                )
+                lines = [f"Generation cost breakdown (computed: ${computed_cost:,.2f}):"]
+            else:
+                lines = [f"Generation cost breakdown (total: ${opf.objective_value:,.2f}):"]
             for fuel, mw in sorted(fuel_mw.items(), key=lambda x: -x[1]):
                 lines.append(f"  {fuel:15s}: {mw:8.2f} MW")
             return "\n".join(lines)
@@ -1020,7 +1043,17 @@ class AgentLoopController:
             base = self._base_opflow_result
             curr = opf
             lines = ["Comparison: current vs base case:"]
-            if base.objective_value is not None and curr.objective_value is not None:
+            if self._config.search.application == "pflow":
+                base_cost = base.compute_generation_cost(self._base_network.gencost)
+                curr_gencost = self._current_network.gencost if self._current_network else self._base_network.gencost
+                curr_cost = curr.compute_generation_cost(curr_gencost)
+                delta = curr_cost - base_cost
+                pct = delta / base_cost * 100 if base_cost != 0 else 0
+                lines.append(
+                    f"  Computed cost: ${base_cost:,.2f} → ${curr_cost:,.2f}"
+                    f"  ({delta:+,.2f}, {pct:+.1f}%)"
+                )
+            elif base.objective_value is not None and curr.objective_value is not None:
                 delta = curr.objective_value - base.objective_value
                 pct = delta / base.objective_value * 100 if base.objective_value != 0 else 0
                 lines.append(
@@ -1280,6 +1313,19 @@ class AgentLoopController:
 
         if best_obj is None:
             print("  Best solution:  N/A (no feasible solution found)")
+        elif self._config.search.application == "pflow":
+            best_entry = None
+            for e in self._journal.entries:
+                if e.iteration == best_iter:
+                    best_entry = e
+                    break
+            feasible_str = "feasible" if best_entry and best_entry.feasible else "infeasible"
+            print(
+                f"  Best solution:  iteration {best_iter} ({feasible_str})"
+            )
+            if rationale:
+                print(f"  Rationale:      {rationale}")
+            print(f"  Search type:    {goal_type.replace('_', ' ')}")
         elif goal_type == "cost_minimization":
             print(
                 f"  Best objective: ${best_obj:,.2f} "

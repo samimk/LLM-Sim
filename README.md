@@ -51,7 +51,7 @@ The search journal tracks every iteration, providing the LLM with a history of w
 | **SCOPFLOW** | Security-Constrained OPF — finds a preventive dispatch that survives all contingencies in a `.cont` file. Requires a contingency file | ✅ Fully supported |
 | **TCOPFLOW** | Multi-Period OPF — time-coupled optimization with generator ramp constraints and load profiles. Requires P and Q load profile CSV files | ✅ Fully supported |
 | **SOPFLOW** | Stochastic OPF — two-stage optimization with wind generation scenarios. Requires a scenario CSV file and a network file with wind generators | ✅ Fully supported |
-| PFLOW | Power Flow — no optimization, LLM performs the search directly | Planned (Phase 4) |
+| **PFLOW** | Power Flow — analysis, not optimization. The LLM performs the search directly using voltage setpoints, tap ratios, shunts, and dispatch adjustments | ✅ Fully supported |
 
 ### DCOPFLOW vs OPFLOW
 
@@ -101,6 +101,20 @@ SOPFLOW solves a two-stage stochastic optimization: a first-stage (here-and-now)
 - The launcher auto-selects scenario files matching the base case name (e.g., `case9mod_gen3_wind.m` → `case9_scenarios.csv`)
 
 Scenario files follow the naming convention `<casename>_scenarios.csv` / `<casename>_10_scenarios.csv` (see `data/README.md`). Select via CLI (`--app sopflow --scenario-file data/case9_10_scenarios.csv`) or in the launcher GUI (application dropdown + auto-matched scenario selector + solver/coupling options).
+
+### PFLOW (Power Flow — Analysis, Not Optimization)
+
+PFLOW solves the nonlinear power flow equations for a given network state — it does **not** optimize. The LLM performs the search directly: proposing dispatch changes, voltage setpoints, tap positions, and shunt adjustments, then evaluating feasibility from PFLOW's results.
+
+Key differences from OPFLOW and other optimization applications:
+- **No objective function** — `objective_value` is always 0.0. Generation cost is computed from the dispatch × cost curves and shown as "Computed generation cost" in results, but the solver does not minimize it.
+- **`set_gen_voltage` directly constrains bus voltage** — in OPFLOW, Vg is an initial guess that the solver overrides; in PFLOW, the solver enforces the setpoint as a hard constraint. This is the primary voltage control tool.
+- **`set_gen_dispatch` directly sets generator output** — no re-dispatch by the solver.
+- **Three new commands** — `set_tap_ratio` (transformer tap positions), `set_shunt_susceptance` (reactive support at buses), `set_phase_shift_angle` (power flow control through phase shifters).
+- **Newton-Rhapson solver** — convergence reported as `CONVERGED` / `DID NOT CONVERGE` (not IPOPT).
+- **Search heuristics in the system prompt** — binary search for feasibility boundaries, gradient-like dispatch adjustment for cost reduction, iterative voltage tuning.
+
+PFLOW is available from the CLI (`--app pflow`) and in the launcher GUI application dropdown. No additional files (contingency, profile, or scenario) are required — only the base case `.m` file.
 
 ## Multi-Objective Tracking
 
@@ -269,6 +283,11 @@ llm-sim ./data/case9mod_gen3_wind.m \
   --app sopflow --scenario-file data/case9_10_scenarios.csv \
   --sopflow-solver EMPAR --np 4
 
+# Power Flow (LLM-driven search, no optimization)
+llm-sim ./data/case_ACTIVSg200.m \
+  "Find the maximum load scaling factor before the power flow fails to converge" \
+  --app pflow --max-iter 15 --mode fresh
+
 # Dry run (validate config without executing)
 python -m llm_sim ./data/case_ACTIVSg200.m "test goal" --dry-run
 ```
@@ -361,6 +380,9 @@ python -m pytest tests/test_tcopflow.py -v
 
 # Run SOPFLOW-specific tests
 python -m pytest tests/test_sopflow.py -v
+
+# Run PFLOW-specific tests
+python -m pytest tests/test_pflow.py -v
 
 # Run end-to-end tests (requires opflow binary)
 python -m pytest tests/test_e2e.py -v -m "not slow"

@@ -49,3 +49,12 @@ goals:
 
   - label: "SOPFLOW: Compare deterministic vs stochastic dispatch"
     goal: "Using SOPFLOW, compare the base-case deterministic dispatch cost with the stochastic solution that accounts for all wind scenarios. Quantify how much additional generation reserve is needed in the stochastic formulation vs. a single-scenario OPFLOW run. Report the stochastic premium."
+
+  - label: "PFLOW: Maximize loadability"
+    goal: "Using PFLOW, find the maximum uniform load scaling factor before the power flow fails to converge. Use binary search with scale_all_loads and fresh mode. The LLM controls the search — PFLOW does not optimise, so you must propose each load level and evaluate feasibility based on convergence status, voltage limits (0.95–1.05 p.u.), and line loading (below 100%). Declare complete when the feasible/infeasible gap is below 1%."
+
+  - label: "PFLOW: Minimize generation cost via dispatch"
+    goal: "Using PFLOW, reduce the total generation cost by adjusting generator dispatch (set_gen_dispatch) while maintaining feasibility. PFLOW does not optimise cost — you must propose dispatch changes and evaluate the computed cost after each simulation. Reduce expensive generator outputs and increase cheaper ones, staying within Pmin/Pmax bounds. Keep all voltages within 0.95–1.05 p.u. and line loadings below 100%."
+
+  - label: "PFLOW: Improve voltage profile"
+    goal: "Using PFLOW, improve the network voltage profile so that all bus voltages are between 0.98 and 1.02 p.u. Use set_gen_voltage to directly control generator voltage setpoints (PFLOW enforces these as hard constraints), set_tap_ratio to adjust transformer taps, and set_shunt_susceptance to add reactive support. PFLOW will enforce your voltage setpoints — this is the primary voltage control tool."

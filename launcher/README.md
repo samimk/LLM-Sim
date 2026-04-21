@@ -39,19 +39,20 @@ Do **not** run `streamlit run app.py` from inside `launcher/` — paths will not
 - Choose LLM backend (Anthropic, OpenAI, Ollama, Ollama-Cloud) with auto-populated model defaults
 - Adjust temperature, iteration mode (accumulative/fresh), and max iterations
 - Search mode selector: **Standard** (goal-directed search) or **Stress Test** (adversarial contingency exploration)
-- Application selector: choose between supported ExaGO applications (OPFLOW for full AC OPF, DCOPFLOW for fast DC approximation, SCOPFLOW for security-constrained OPF, TCOPFLOW for multi-period OPF, SOPFLOW for stochastic OPF)
+- Application selector: choose between supported ExaGO applications (OPFLOW for full AC OPF, DCOPFLOW for fast DC approximation, SCOPFLOW for security-constrained OPF, TCOPFLOW for multi-period OPF, SOPFLOW for stochastic OPF, PFLOW for LLM-driven power flow analysis)
 - Contingency file selector: appears when SCOPFLOW is selected, showing available `.cont` files from the `data/` directory
 - Load profile selectors: appear when TCOPFLOW is selected, auto-matching profile CSV files to the selected base case (layered fallback: exact prefix → stripped suffix → all profiles). Includes active load (P), reactive load (Q), and optional wind generation profile dropdowns
 - Temporal parameters: appear when TCOPFLOW is selected — Duration (hours), Time-step (minutes), and Generator ramp coupling toggle
 - Scenario file selector: appears when SOPFLOW is selected, auto-matching wind scenario CSV files to the selected base case (layered fallback: exact prefix → stripped suffix → all scenarios). Supports both single-period and multi-period scenario formats
 - SOPFLOW parameters: appear when SOPFLOW is selected — Solver (IPOPT or EMPAR) and First/second stage coupling toggle. MPI core count (`--np`) is available for EMPAR
-- Preset goal library with common optimization tasks (minimize cost, fix voltage violations, stress testing, multi-objective, etc.)
+- PFLOW info: when PFLOW is selected, a note explains that PFLOW is analysis (not optimization) and the LLM drives the search directly. No additional configuration files are needed
+- Preset goal library with common optimization tasks (minimize cost, fix voltage violations, stress testing, multi-objective, PFLOW-specific goals like loadability search and voltage improvement, etc.)
 - Custom goal input via free-text area
 
 ### Live Search Monitor
 - Two-column layout: iteration timeline (left) and live charts (right)
 - Expandable iteration cards showing LLM reasoning, commands, and key metrics
-- Real-time convergence chart (objective value vs iteration, color-coded by feasibility)
+- Real-time convergence chart (objective value vs iteration, color-coded by feasibility; not shown for PFLOW which has no optimization objective — a note directs to the voltage range chart instead)
 - Live voltage range chart with limit reference lines
 - Progress stats: iteration count, feasible count, best cost found
 - Phase status indicator (sending prompt, running simulation, parsing results, etc.)
@@ -62,6 +63,7 @@ Do **not** run `streamlit run app.py` from inside `launcher/` — paths will not
 - **Detailed Results**: Voltage profile comparison, generator dispatch chart, line loading chart, full iteration history table
 
 > **Note:** When using DCOPFLOW, voltage profile and voltage range charts show flat lines at 1.0 pu (expected — DC approximation fixes all voltages). Line loading and generator dispatch charts remain informative.
+> **Note:** When using PFLOW, the convergence chart is not displayed (PFLOW has no objective value). The "Best Cost" metric is replaced with a feasibility-based "Best Solution" indicator. Cost columns in iteration tables show "N/A (no optimization)" instead of "$0.00".
 - **Analysis & Report**: On-demand LLM-generated analytical summary, auto-generated search narrative, PDF report download
 
 ### Multi-Objective Tracking

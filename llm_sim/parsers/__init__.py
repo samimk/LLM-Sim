@@ -40,6 +40,11 @@ from llm_sim.parsers.sopflow_parser import (
     parse_sopflow_simulation_result,
 )
 from llm_sim.parsers.sopflow_summary import sopflow_results_summary
+from llm_sim.parsers.pflow_parser import (
+    parse_pflow_output,
+    parse_pflow_simulation_result,
+)
+from llm_sim.parsers.pflow_summary import pflow_results_summary
 
 _logger = logging.getLogger("llm_sim.parsers")
 
@@ -73,6 +78,12 @@ def parse_simulation_result_for_app(sim_result, application: str, bus_limits=Non
         return opflow_result
     if application == "sopflow":
         parsed = parse_sopflow_simulation_result(sim_result, bus_limits=bus_limits)
+        if parsed is None:
+            return None
+        opflow_result, _metadata = parsed
+        return opflow_result
+    if application == "pflow":
+        parsed = parse_pflow_simulation_result(sim_result, bus_limits=bus_limits)
         if parsed is None:
             return None
         opflow_result, _metadata = parsed
@@ -121,6 +132,18 @@ def parse_sopflow_metadata(sim_result) -> dict | None:
     return metadata
 
 
+def parse_pflow_metadata(sim_result) -> dict | None:
+    """Extract PFLOW-specific metadata (solver, convergence_status).
+
+    Returns a dict or None if parsing fails or the simulation did not succeed.
+    """
+    parsed = parse_pflow_simulation_result(sim_result)
+    if parsed is None:
+        return None
+    _opflow_result, metadata = parsed
+    return metadata
+
+
 def results_summary_for_app(result: OPFLOWResult, application: str, **kwargs) -> str:
     """Dispatch to the correct results summary generator based on application.
 
@@ -128,6 +151,8 @@ def results_summary_for_app(result: OPFLOWResult, application: str, **kwargs) ->
     For 'dcopflow': use dcopflow_results_summary().
     For 'scopflow': use scopflow_results_summary() with optional num_contingencies.
     For 'tcopflow': use tcopflow_results_summary() with optional TCOPFLOW kwargs.
+    For 'sopflow': use sopflow_results_summary() with optional num_scenarios.
+    For 'pflow': use pflow_results_summary() with optional gencost.
     For unknown applications: fall back to results_summary() with a warning.
 
     kwargs:
@@ -137,6 +162,7 @@ def results_summary_for_app(result: OPFLOWResult, application: str, **kwargs) ->
         dT_min (float): Time-step size in minutes (TCOPFLOW only).
         is_coupling (bool): Ramp constraints enabled (TCOPFLOW only).
         period_data (list[dict]): Per-period parsed data (TCOPFLOW only).
+        gencost (list[GenCost]): Generator cost curves for computing cost (PFLOW only).
     """
     if application == "dcopflow":
         return dcopflow_results_summary(result)
@@ -158,6 +184,10 @@ def results_summary_for_app(result: OPFLOWResult, application: str, **kwargs) ->
     if application == "sopflow":
         return sopflow_results_summary(
             result, num_scenarios=kwargs.get("num_scenarios", 0)
+        )
+    if application == "pflow":
+        return pflow_results_summary(
+            result, gencost=kwargs.get("gencost"),
         )
     _logger.warning(
         "Unknown application '%s' for results_summary_for_app — "
@@ -193,10 +223,14 @@ __all__ = [
     "parse_sopflow_output",
     "parse_sopflow_simulation_result",
     "parse_sopflow_metadata",
+    "parse_pflow_output",
+    "parse_pflow_simulation_result",
+    "parse_pflow_metadata",
     "results_summary",
     "results_summary_for_app",
     "dcopflow_results_summary",
     "scopflow_results_summary",
     "tcopflow_results_summary",
     "sopflow_results_summary",
+    "pflow_results_summary",
 ]

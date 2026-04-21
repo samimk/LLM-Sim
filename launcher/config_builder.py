@@ -245,10 +245,10 @@ DEFAULT_MODELS: dict[str, str] = {
 BACKENDS: list[str] = ["anthropic", "openai", "ollama", "ollama-cloud"]
 
 # Available applications
-APPLICATIONS: list[str] = ["opflow", "dcopflow", "scopflow", "tcopflow", "sopflow"]
+APPLICATIONS: list[str] = ["opflow", "dcopflow", "scopflow", "tcopflow", "sopflow", "pflow"]
 
 # Future applications (shown as disabled in the UI)
-FUTURE_APPLICATIONS: list[str] = ["pflow"]
+FUTURE_APPLICATIONS: list[str] = []
 
 # Available search modes
 MODES: list[str] = ["accumulative", "fresh"]

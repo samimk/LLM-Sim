@@ -237,6 +237,84 @@ _SOPFLOW_SECTION = (
     "you have found the boundary."
 )
 
+_PFLOW_SECTION = (
+    "=== Power Flow (PFLOW) — Analysis, Not Optimization ===\n\n"
+    "PFLOW solves the nonlinear power flow equations for a given network state. "
+    "It does NOT optimise anything. There is no objective function, no cost minimisation, "
+    "and no re-dispatch. The LLM is the optimiser: YOU control the search.\n\n"
+    "=== CRITICAL: Voltage Limits Must Be Set Explicitly ===\n\n"
+    "PFLOW does NOT enforce bus voltage limits — it only solves the power flow equations. "
+    "Violation checking uses the Vmin/Vmax values in the network file. If the default limits "
+    "are wide (e.g., 0.9/1.1), voltages outside the typical engineering range of 0.95–1.05 pu "
+    "will NOT be flagged as violations.\n\n"
+    "**IMPORTANT: As your FIRST action in any PFLOW search, issue "
+    "set_all_bus_vlimits (command 11) to set the voltage limits you want to enforce.** "
+    "For typical feasibility searches, use:\n"
+    '{"action": "set_all_bus_vlimits", "Vmin": 0.95, "Vmax": 1.05}\n\n'
+    "This ensures that voltages outside 0.95–1.05 pu are correctly reported as violations. "
+    "Without this command, the search may treat infeasible operating points as feasible, "
+    "leading to incorrect boundary estimates.\n\n"
+    "=== Key Differences from OPFLOW ===\n\n"
+    "- There is NO objective value. The 'computed generation cost' shown in results is "
+    "calculated from your dispatch multiplied by the generator cost curves — it is a "
+    "reporting metric, not something the solver minimises.\n"
+    "- set_gen_voltage (command 6) DIRECTLY constrains the bus voltage. In OPFLOW, "
+    "Vg is only an initial guess that the solver overrides. In PFLOW, the generator's "
+    "voltage setpoint is a hard constraint — the solver enforces it. This is your "
+    "primary tool for voltage control.\n"
+    "- set_gen_dispatch (command 5) sets the generator's active power output directly. "
+    "PFLOW will not re-dispatch generators — the dispatch you specify is the dispatch "
+    "that will be solved.\n"
+    "- PFLOW uses Newton-Raphson (not IPOPT). Convergence is reported as CONVERGED or "
+    "DID NOT CONVERGE.\n\n"
+    "=== Search Heuristics for LLM-Driven Optimisation ===\n\n"
+    "Since PFLOW does not optimise, you must implement the search strategy yourself:\n\n"
+    "1. **Feasibility boundary (binary search):** To find the maximum load level before "
+    "infeasibility, scale loads incrementally. When PFLOW reports DID NOT CONVERGE, "
+    "reduce the scaling and try again. Binary search converges quickly — reduce the "
+    "gap by half each iteration and declare 'complete' when the gap is below 1%.\n\n"
+    "2. **Cost reduction (gradient-like):** To reduce generation cost while maintaining "
+    "feasibility, reduce expensive generator outputs and increase cheaper ones while "
+    "staying within Pmin/Pmax bounds. Check cost changes and feasibility after each "
+    "adjustment.\n\n"
+    "3. **Voltage improvement (iterative adjustment):** To improve voltage profile, "
+    "adjust set_gen_voltage on generators near buses with poor voltage. PFLOW will "
+    "enforce your setpoints. Increase Vg to raise bus voltages, decrease to lower them.\n\n"
+    "4. **Thermal relief (selective modification):** To reduce line loading, redistribute "
+    "generation using set_gen_dispatch, or disable overloaded lines with set_branch_status, "
+    "or reduce load with scale_load or scale_all_loads.\n\n"
+    "=== New Commands for PFLOW ===\n\n"
+    "In addition to the standard commands, PFLOW search has access to:\n"
+    "- set_tap_ratio (command 14): Adjust transformer tap ratio. Only applies to branches "
+    "that are transformers (ratio ≠ 0 in the base network). Typical range: 0.9–1.1.\n"
+    "- set_shunt_susceptance (command 15): Modify shunt susceptance (Bs) at a bus. "
+    "Positive Bs adds capacitive susceptance (raises voltage); negative adds inductive "
+    "(lowers voltage).\n"
+    "- set_phase_shift_angle (command 16): Adjust phase shifter angle (degrees). Only "
+    "applies to branches that are phase shifters (angle ≠ 0 in the base network).\n\n"
+    "=== Feasibility Classification ===\n\n"
+    "Each iteration is classified as one of:\n"
+    "- feasible: PFLOW converged with no constraint violations. The power flow solution "
+    "is physically valid.\n"
+    "- infeasible: PFLOW did not converge (DID NOT CONVERGE) or the solution has "
+    "generation < load (negative losses). No valid power flow solution exists for "
+    "the given dispatch and network state.\n"
+    "- marginal: PFLOW did not fully converge but the solution data shows voltages "
+    "within 0.01 pu of limits or line loading within 5% of thermal limits. This "
+    "indicates the operating point is at or near the feasibility boundary — treat as "
+    "a boundary marker.\n\n"
+    "=== Important Reminders ===\n\n"
+    "- PFLOW results include a 'Computed generation cost' line — this is NOT an "
+    "optimised cost. It is simply Σ(Pg × cost_curve). Use it to evaluate different "
+    "dispatches, but remember the solver did not minimise it.\n"
+    "- When PFLOW does not converge, the solution data may be absent or unreliable. "
+    "Treat non-convergence as a clear signal that the current network state is infeasible.\n"
+    "- Use set_all_bus_vlimits to define the acceptable voltage range for feasibility "
+    "checks, just like in OPFLOW.\n"
+    "- Prefer 'fresh' mode for feasibility boundary searches (binary search). "
+    "Prefer 'accumulative' mode for incremental cost/voltage tuning."
+)
+
 def _app_section(application: str) -> str:
     """Return the application-specific prompt section for the given app."""
     if application == "dcopflow":
@@ -247,6 +325,8 @@ def _app_section(application: str) -> str:
         return _AC_OPF_VOLTAGE_SECTION + "\n\n" + _TCOPFLOW_SECTION
     if application == "sopflow":
         return _AC_OPF_VOLTAGE_SECTION + "\n\n" + _SOPFLOW_SECTION
+    if application == "pflow":
+        return _PFLOW_SECTION
     return _AC_OPF_VOLTAGE_SECTION
 
 

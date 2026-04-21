@@ -161,6 +161,7 @@ def start_search(base_case_path, goal, backend, model, temperature,
     try:
         manager.start_search(config_overrides=overrides, goal=goal)
         st.session_state.search_running = True
+        st.session_state.current_application = application
     except Exception as e:
         st.error(f"Failed to start search: {e}")
 
@@ -215,6 +216,11 @@ def render_sidebar() -> dict:
         )
         if FUTURE_APPLICATIONS:
             st.caption(f"Coming soon: {', '.join(FUTURE_APPLICATIONS)}")
+        if application == "pflow":
+            st.caption(
+                "PFLOW solves power flow equations — there is no cost optimization. "
+                "The LLM controls the search strategy."
+            )
 
         # Contingency file selector (SCOPFLOW only)
         ctgc_file = None
@@ -386,7 +392,7 @@ def render_sidebar() -> dict:
             disabled=mpi_disabled,
             help="Number of MPI processes for ExaGO (default: 1). "
             "SCOPFLOW and SOPFLOW support multi-core execution via EMPAR solver. "
-            "OPFLOW, DCOPFLOW, and TCOPFLOW use IPOPT on a single core only.",
+            "OPFLOW, DCOPFLOW, TCOPFLOW, and PFLOW use single-core solvers only.",
         )
         if application not in ("scopflow", "sopflow"):
             mpi_np = 1
@@ -641,7 +647,7 @@ def render_live_monitor():
                     stats = session.journal.summary_stats()
                     st.session_state.completed_sessions.append({
                         "goal": session.goal[:50],
-                        "best_obj": f"${stats['best_objective']:,.2f}" if stats["best_objective"] else "N/A",
+                        "best_obj": f"${stats['best_objective']:,.2f}" if stats["best_objective"] and session.application != "pflow" else ("N/A (analysis)" if session.application == "pflow" else "N/A"),
                         "iterations": stats["total_iterations"],
                         "termination": session.termination_reason,
                     })
@@ -690,7 +696,11 @@ def render_live_monitor():
         for entry in st.session_state.iteration_log:
             icon = _iteration_icon(entry)
             obj = entry.get("objective_value")
-            obj_str = f"${obj:,.2f}" if obj is not None else "FAILED"
+            is_pflow_live = st.session_state.get("current_application") == "pflow"
+            if is_pflow_live:
+                obj_str = "analysis" if obj is not None else "FAILED"
+            else:
+                obj_str = f"${obj:,.2f}" if obj is not None else "FAILED"
             elapsed = entry.get("sim_elapsed")
             time_str = f"{elapsed:.1f}s" if elapsed is not None else "—"
             label = (
@@ -735,32 +745,36 @@ def render_live_monitor():
     # ── Right Column: Live Charts and Stats ──────────────────────────────
     with right_col:
         # Convergence Chart
-        iterations = []
-        values = []
-        colors = []
-        for entry in st.session_state.iteration_log:
-            if entry["objective_value"] is not None:
-                iterations.append(entry["iteration"])
-                values.append(entry["objective_value"])
-                colors.append("green" if entry["feasible"] else "red")
+        is_pflow_live = st.session_state.get("current_application") == "pflow"
+        if is_pflow_live:
+            st.info("Convergence chart not shown for PFLOW (no optimization objective). See voltage range chart below.")
+        else:
+            iterations = []
+            values = []
+            colors = []
+            for entry in st.session_state.iteration_log:
+                if entry["objective_value"] is not None:
+                    iterations.append(entry["iteration"])
+                    values.append(entry["objective_value"])
+                    colors.append("green" if entry["feasible"] else "red")
 
-        fig = go.Figure()
-        if iterations:
-            fig.add_trace(go.Scatter(
-                x=iterations, y=values,
-                mode="lines+markers",
-                marker=dict(color=colors, size=8),
-                line=dict(color="rgba(100,100,100,0.5)"),
-                hovertemplate="Iter %{x}<br>$%{y:,.2f}<extra></extra>",
-            ))
-        fig.update_layout(
-            title="Convergence",
-            xaxis_title="Iteration",
-            yaxis_title="Objective Value ($)",
-            height=280,
-            margin=dict(l=20, r=20, t=40, b=20),
-        )
-        st.plotly_chart(fig, width="stretch")
+            fig = go.Figure()
+            if iterations:
+                fig.add_trace(go.Scatter(
+                    x=iterations, y=values,
+                    mode="lines+markers",
+                    marker=dict(color=colors, size=8),
+                    line=dict(color="rgba(100,100,100,0.5)"),
+                    hovertemplate="Iter %{x}<br>$%{y:,.2f}<extra></extra>",
+                ))
+            fig.update_layout(
+                title="Convergence",
+                xaxis_title="Iteration",
+                yaxis_title="Objective Value ($)",
+                height=280,
+                margin=dict(l=20, r=20, t=40, b=20),
+            )
+            st.plotly_chart(fig, width="stretch")
 
         # Voltage Range Chart
         iters_v = [e["iteration"] for e in st.session_state.iteration_log
@@ -817,11 +831,18 @@ def render_live_monitor():
             ]
             if feasible_entries:
                 best = min(feasible_entries, key=lambda e: e["objective_value"])
-                st.metric(
-                    "Best Cost",
-                    f"${best['objective_value']:,.2f}",
-                    delta=f"Iter {best['iteration']}",
-                )
+                if st.session_state.get("current_application") == "pflow":
+                    st.metric(
+                        "Best Solution",
+                        f"Iter {best['iteration']}",
+                        delta=f"V: {best.get('voltage_min', 0):.3f}\u2013{best.get('voltage_max', 0):.3f} p.u." if best.get("voltage_min", 0) > 0 else None,
+                    )
+                else:
+                    st.metric(
+                        "Best Cost",
+                        f"${best['objective_value']:,.2f}",
+                        delta=f"Iter {best['iteration']}",
+                    )
 
         # ── Steering Panel ────────────────────────────────────────────
         st.markdown("---")
@@ -966,9 +987,17 @@ def _render_overview_tab(session):
     mc4.metric("Termination", session.termination_reason)
     mc5.metric("Tokens", f"{total_tokens:,}" if total_tokens > 0 else "—")
 
-    # Best objective with goal-type-aware framing
     base_entry = session.journal.entries[0] if session.journal.entries else None
-    if stats["best_objective"] is not None:
+    best_entry = None
+    if stats.get("best_iteration") is not None:
+        for e in session.journal.entries:
+            if e.iteration == stats["best_iteration"]:
+                best_entry = e
+                break
+    is_pflow = session.application == "pflow"
+
+    # Best objective with goal-type-aware framing
+    if stats["best_objective"] is not None and not is_pflow:
         if base_entry and base_entry.objective_value is not None and base_entry.objective_value != 0:
             pct = (stats["best_objective"] - base_entry.objective_value) / base_entry.objective_value * 100
             if goal_type in (None, "cost_minimization"):
@@ -1000,6 +1029,15 @@ def _render_overview_tab(session):
         else:
             label = "Best Objective" if goal_type in (None, "cost_minimization") else "Cost at Best Solution"
             st.metric(label, f"${stats['best_objective']:,.2f}")
+    elif is_pflow:
+        st.metric("Feasibility", f"{stats['feasible_count']} / {stats['total_iterations']} feasible")
+        if best_entry:
+            st.metric(
+                "Best Solution",
+                f"Iteration {best_entry.iteration}",
+                delta=f"V: {best_entry.voltage_min:.3f}\u2013{best_entry.voltage_max:.3f} p.u.",
+                delta_color="off",
+            )
 
     # Show goal achievement if available
     if gc and gc.get("best_iteration_rationale"):
@@ -1015,15 +1053,15 @@ def _render_overview_tab(session):
         comparison_label = "Base Case vs Selected Exploration Result"
     st.subheader(comparison_label)
 
-    best_entry = None
-    if stats.get("best_iteration") is not None:
-        for e in session.journal.entries:
-            if e.iteration == stats["best_iteration"]:
-                best_entry = e
-                break
-
     def _fmt_cost(v):
         return f"${v:,.2f}" if v is not None else "—"
+
+    def _fmt_obj(v, is_pflow=False):
+        if is_pflow:
+            return "N/A (no optimization)" if (v is None or v == 0.0) else f"${v:,.2f}"
+        return f"${v:,.2f}" if v is not None else "—"
+
+    is_pflow = session.application == "pflow"
 
     def _fmt_f(v, fmt=".1f"):
         return f"{v:{fmt}}" if v and v > 0 else "—"
@@ -1038,10 +1076,11 @@ def _render_overview_tab(session):
     b = base_entry
     s = best_entry
     if b:
+        cost_label = "Cost (computed)" if is_pflow else "Objective (cost)"
         rows.append({
-            "Metric": "Objective (cost)",
-            "Base Case": _fmt_cost(b.objective_value),
-            "Best Solution": _fmt_cost(s.objective_value) if s else "N/A",
+            "Metric": cost_label,
+            "Base Case": _fmt_obj(b.objective_value, is_pflow),
+            "Best Solution": _fmt_obj(s.objective_value, is_pflow) if s else "N/A",
             "Change": _change(b.objective_value, s.objective_value, ",.2f") if s else "—",
         })
         rows.append({
@@ -1136,6 +1175,12 @@ def _render_detailed_tab(session):
     """Render the Detailed Results tab with comparison charts and history table."""
     base_opflow = st.session_state.base_opflow
     best_opflow = st.session_state.best_opflow
+    is_pflow = session.application == "pflow"
+
+    def _fmt_obj(v, is_pf=False):
+        if is_pf:
+            return "N/A (no optimization)" if (v is None or v == 0.0) else f"${v:,.2f}"
+        return f"${v:,.2f}" if v is not None else "—"
 
     # Voltage Profile
     fig_vp = voltage_profile_chart(
@@ -1167,11 +1212,13 @@ def _render_detailed_tab(session):
     # Iteration History Table
     st.subheader("📋 Iteration History")
     rows = []
+    cost_col = "Cost" if is_pflow else "Cost ($)"
     for e in session.journal.entries:
+        cost_val = _fmt_obj(e.objective_value, is_pflow) if e.objective_value is not None else "FAILED"
         rows.append({
             "Iteration": e.iteration,
             "Description": e.description[:50],
-            "Cost ($)": f"${e.objective_value:,.2f}" if e.objective_value is not None else "FAILED",
+            cost_col: cost_val,
             "Feasible": "✅" if e.feasible else "❌",
             "V_min (p.u.)": f"{e.voltage_min:.3f}" if e.voltage_min > 0 else "—",
             "V_max (p.u.)": f"{e.voltage_max:.3f}" if e.voltage_max > 0 else "—",
@@ -1228,20 +1275,26 @@ def _render_analysis_tab(session):
         st.info("No iterations were recorded during this search.")
 
     for entry in session.journal.entries:
+        is_pflow = session.application == "pflow"
         if entry.iteration == 0:
             st.markdown(
                 "**Iteration 0 (Base Case):** Initial simulation of the unmodified network."
             )
-            if entry.objective_value is not None:
+            if entry.objective_value is not None and not is_pflow:
                 st.markdown(
                     f"Base cost: ${entry.objective_value:,.2f}, "
                     f"voltage range: {entry.voltage_min:.3f}\u2013{entry.voltage_max:.3f} p.u."
+                )
+            elif is_pflow:
+                st.markdown(
+                    f"Base case: voltage range {entry.voltage_min:.3f}\u2013{entry.voltage_max:.3f} p.u."
                 )
         else:
             status = "✅" if entry.feasible else "❌"
             obj_str = (
                 f"${entry.objective_value:,.2f}"
-                if entry.objective_value is not None else "FAILED"
+                if entry.objective_value is not None and not is_pflow else
+                ("analysis" if is_pflow else "FAILED")
             )
             st.markdown(
                 f"**Iteration {entry.iteration}** {status}: {entry.description}"

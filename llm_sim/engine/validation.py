@@ -18,6 +18,9 @@ from llm_sim.engine.commands import (
     SetGenStatus,
     SetGenVoltage,
     SetLoad,
+    SetPhaseShiftAngle,
+    SetShuntSusceptance,
+    SetTapRatio,
 )
 from llm_sim.parsers.matpower_model import MATNetwork
 
@@ -177,6 +180,37 @@ def validate_command(cmd: ModCommand, net: MATNetwork) -> ValidationResult:
         for v, name in ((cmd.Vmin, "Vmin"), (cmd.Vmax, "Vmax")):
             if v is not None and (v < 0.5 or v > 1.5):
                 warnings.append(f"{name}={v} is outside the reasonable range [0.5, 1.5] pu")
+
+    elif isinstance(cmd, SetTapRatio):
+        branch = _validate_branch(net, cmd.fbus, cmd.tbus, cmd.ckt, errors)
+        if branch is not None:
+            if branch.ratio == 0:
+                errors.append(
+                    f"Branch {cmd.fbus}-{cmd.tbus} is not a transformer "
+                    f"(tap ratio is 0). set_tap_ratio only applies to transformers."
+                )
+            if cmd.ratio <= 0:
+                errors.append(f"Tap ratio must be > 0, got {cmd.ratio}")
+            if cmd.ratio < 0.8 or cmd.ratio > 1.2:
+                warnings.append(
+                    f"Tap ratio {cmd.ratio} is outside the typical range [0.8, 1.2]"
+                )
+
+    elif isinstance(cmd, SetShuntSusceptance):
+        _validate_bus_exists(net, cmd.bus, errors)
+
+    elif isinstance(cmd, SetPhaseShiftAngle):
+        branch = _validate_branch(net, cmd.fbus, cmd.tbus, cmd.ckt, errors)
+        if branch is not None:
+            if branch.angle == 0:
+                errors.append(
+                    f"Branch {cmd.fbus}-{cmd.tbus} is not a phase shifter "
+                    f"(angle is 0). set_phase_shift_angle only applies to phase shifters."
+                )
+            if abs(cmd.angle) > 90:
+                warnings.append(
+                    f"Phase shift angle {cmd.angle} degrees is very large (typical range: -60 to 60)"
+                )
 
     return ValidationResult(
         valid=len(errors) == 0,

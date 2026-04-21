@@ -65,10 +65,18 @@ _DC_EXCLUDED_METRICS = {
 
 
 def available_metrics_for_app(application: str) -> list[str]:
-    """Return metrics relevant for the given application."""
+    """Return metrics relevant for the given application.
+
+    For PFLOW, 'generation_cost' is always 0.0 because PFLOW has no
+    optimization objective. The computed generation cost (dispatch x cost curves)
+    is shown in the results summary instead.
+    """
     all_metrics = list(_EXTRACTORS.keys())
     if application == "dcopflow":
         return [m for m in all_metrics if m not in _DC_EXCLUDED_METRICS]
+    if application == "pflow":
+        _PFLOW_EXCLUDED = {"generation_cost"}
+        return [m for m in all_metrics if m not in _PFLOW_EXCLUDED]
     if application in ("tcopflow", "sopflow"):
         return all_metrics
     return all_metrics
