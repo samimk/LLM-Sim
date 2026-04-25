@@ -69,6 +69,7 @@ def init_session_state():
         "selected_goal_label": "Custom",
         "steering_history": [],
         "search_paused": False,
+        "explore_status": None,
     }
     for key, default in defaults.items():
         if key not in st.session_state:
@@ -102,7 +103,7 @@ def start_search(base_case_path, goal, backend, model, temperature,
                    pload_profile=None, qload_profile=None, wind_profile=None,
                    tcopflow_duration=1.0, tcopflow_dT=60.0, tcopflow_iscoupling=1,
                    scenario_file=None, sopflow_solver="IPOPT", sopflow_iscoupling=0,
-                   benchmark_opflow=False):
+                   benchmark_opflow=False, concurrent_pflow=False, max_variants=8):
     """Initialize and start a new search."""
     # Validate base case still exists
     if not Path(base_case_path).exists():
@@ -138,6 +139,8 @@ def start_search(base_case_path, goal, backend, model, temperature,
         sopflow_solver=sopflow_solver,
         sopflow_iscoupling=sopflow_iscoupling,
         benchmark_opflow=benchmark_opflow,
+        concurrent_pflow=concurrent_pflow,
+        max_variants=max_variants,
     )
 
     if st.session_state.session_manager is None:
@@ -159,6 +162,7 @@ def start_search(base_case_path, goal, backend, model, temperature,
     st.session_state.stop_requested = False
     st.session_state.steering_history = []
     st.session_state.search_paused = False
+    st.session_state.explore_status = None
 
     try:
         manager.start_search(config_overrides=overrides, goal=goal)
@@ -221,7 +225,8 @@ def render_sidebar() -> dict:
         if application == "pflow":
             st.caption(
                 "PFLOW solves power flow equations — there is no cost optimization. "
-                "The LLM controls the search strategy."
+                "The LLM controls the search strategy. Enable 'Concurrent explore/select' "
+                "below to allow the LLM to evaluate multiple configurations in parallel."
             )
 
         # Contingency file selector (SCOPFLOW only)
@@ -409,6 +414,28 @@ def render_sidebar() -> dict:
         if application != "pflow":
             benchmark_opflow = False
 
+        concurrent_pflow = st.checkbox(
+            "Concurrent explore/select",
+            value=False,
+            disabled=disabled or application != "pflow",
+            help="Enable concurrent neighborhood search for PFLOW. The LLM can "
+            "propose multiple variants per iteration, which are evaluated in "
+            "parallel. A Pareto front identifies the best tradeoffs, and the "
+            "LLM selects one variant as the new current point.",
+        )
+        max_variants = st.number_input(
+            "Max variants per explore",
+            min_value=2,
+            max_value=16,
+            value=8,
+            disabled=disabled or application != "pflow" or not concurrent_pflow,
+            help="Maximum number of PFLOW instances to run concurrently per "
+            "explore action (default: 8). Each variant is a separate simulation.",
+        )
+        if application != "pflow":
+            concurrent_pflow = False
+            max_variants = 8
+
         # ── Search Goal ──────────────────────────────────────────────────
         st.header("🎯 Search Goal")
         example_goals = load_example_goals()
@@ -471,6 +498,8 @@ def render_sidebar() -> dict:
                 sopflow_solver=sopflow_solver,
                 sopflow_iscoupling=sopflow_iscoupling,
                 benchmark_opflow=benchmark_opflow,
+                concurrent_pflow=concurrent_pflow,
+                max_variants=max_variants,
             )
             st.rerun()
 
@@ -675,12 +704,19 @@ def render_live_monitor():
                     "applying_commands": "Applying modifications...",
                     "running_simulation": "Running simulation...",
                     "parsing_results": "Parsing results...",
+                    "computing_pareto_front": "Computing Pareto front...",
                 }
-                st.session_state.current_phase = phase_labels.get(
-                    update["phase"], update["phase"]
-                )
+                raw_phase = update["phase"]
+                if raw_phase.startswith("running_simulation ("):
+                    st.session_state.current_phase = f"Running {raw_phase.split('(')[1].rstrip(')')}..."
+                else:
+                    st.session_state.current_phase = phase_labels.get(
+                        raw_phase, raw_phase
+                    )
             elif update["type"] == "pause_state":
                 st.session_state.search_paused = update["paused"]
+            elif update["type"] == "explore_status":
+                st.session_state.explore_status = update
             elif update["type"] == "error":
                 st.session_state.search_error = update["message"]
 
@@ -745,6 +781,18 @@ def render_live_monitor():
 
                 # Mode
                 st.caption(f"Mode: {entry.get('mode', '—')}")
+
+                # Explored variants (concurrent PFLOW)
+                explored_variants = entry.get("explored_variants")
+                if explored_variants:
+                    st.markdown(f"**Explored {len(explored_variants)} variants:**")
+                    variant_rows = []
+                    for v in explored_variants:
+                        label = v.get("label", "?")
+                        feasible = "✅" if v.get("feasible") else "❌"
+                        cost = f"${v['cost']:,.0f}" if v.get("cost") is not None else "—"
+                        variant_rows.append(f"{label}: {feasible} {cost}")
+                    st.code("\n".join(variant_rows), language=None)
 
         # Current phase indicator
         if st.session_state.search_running and st.session_state.current_phase:
@@ -857,6 +905,35 @@ def render_live_monitor():
                         delta=f"Iter {best['iteration']}",
                     )
 
+        # ── Explore Status ───────────────────────────────────────────────
+        explore_status = st.session_state.get("explore_status")
+        if explore_status:
+            with st.expander(
+                f"🔍 Explore: {len(explore_status['variant_summaries'])} variants evaluated",
+                expanded=True,
+            ):
+                variants = explore_status["variant_summaries"]
+                for v in variants:
+                    label = v.get("label", "?")
+                    feasible = v.get("feasible", False)
+                    is_pareto = v.get("is_pareto", False)
+                    icon = "✅" if feasible else "❌"
+                    pareto_mark = " ★" if is_pareto else ""
+                    v_min = v.get("voltage_min", 0)
+                    v_max = v.get("voltage_max", 0)
+                    violations = v.get("violations_count", 0)
+                    loading = v.get("max_line_loading_pct", 0)
+                    status = f"{icon} **{label}**{pareto_mark}"
+                    if feasible:
+                        status += f"  —  V: {v_min:.3f}–{v_max:.3f}  |  Load: {loading:.1f}%  |  Viol: {violations}"
+                    else:
+                        conv = v.get("convergence_status", "FAILED")
+                        status += f"  —  {conv}"
+                    st.markdown(status)
+                pareto_variants = [v for v in variants if v.get("is_pareto")]
+                if pareto_variants:
+                    st.info(f"Pareto-optimal: {', '.join(v['label'] for v in pareto_variants)} — awaiting LLM selection")
+
         # ── Steering Panel ────────────────────────────────────────────
         st.markdown("---")
         st.markdown("**🎮 Steering**")
@@ -897,7 +974,6 @@ def render_live_monitor():
                 if st.button("▶️ Resume", width='stretch'):
                     if manager is not None:
                         manager.resume_search()
-                        st.session_state.search_paused = False
             else:
                 if st.button("⏸️ Pause", width='stretch', disabled=not st.session_state.search_running):
                     if manager is not None:
@@ -933,6 +1009,7 @@ def _reset_for_new_search():
     st.session_state.goal_classification = None
     st.session_state.steering_history = []
     st.session_state.search_paused = False
+    st.session_state.explore_status = None
     st.rerun()
 
 

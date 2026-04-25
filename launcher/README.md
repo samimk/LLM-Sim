@@ -46,6 +46,7 @@ Do **not** run `streamlit run app.py` from inside `launcher/` — paths will not
 - Scenario file selector: appears when SOPFLOW is selected, auto-matching wind scenario CSV files to the selected base case (layered fallback: exact prefix → stripped suffix → all scenarios). Supports both single-period and multi-period scenario formats
 - SOPFLOW parameters: appear when SOPFLOW is selected — Solver (IPOPT or EMPAR) and First/second stage coupling toggle. MPI core count (`--np`) is available for EMPAR
 - PFLOW info: when PFLOW is selected, a note explains that PFLOW is analysis (not optimization) and the LLM drives the search directly. No additional configuration files are needed
+- **Concurrent explore/select** (PFLOW only): checkbox enables the LLM to propose multiple simulation variants per iteration. Each explore action runs 2–8 configurations concurrently, computes a Pareto front, and presents non-dominated variants for selection. The "Max variants per explore" input controls the parallelism level (2–16, default 8). When enabled, the live monitor shows an explore status panel with variant feasibility, Pareto markers (★), and key metrics for each variant. The iteration log shows explored variants for `select` entries
 - Preset goal library with common optimization tasks (minimize cost, fix voltage violations, stress testing, multi-objective, PFLOW-specific goals like loadability search and voltage improvement, etc.)
 - Custom goal input via free-text area
 
@@ -55,7 +56,7 @@ Do **not** run `streamlit run app.py` from inside `launcher/` — paths will not
 - Real-time convergence chart (objective value vs iteration, color-coded by feasibility; not shown for PFLOW which has no optimization objective — a note directs to the voltage range chart instead)
 - Live voltage range chart with limit reference lines
 - Progress stats: iteration count, feasible count, best cost found
-- Phase status indicator (sending prompt, running simulation, parsing results, etc.)
+- Phase status indicator (sending prompt, running simulation, parsing results, etc.). When concurrent PFLOW is active, the phase indicator shows "Running 5 variants..." during parallel simulation and "Computing Pareto front..." during result analysis
 - Stop button for graceful search termination
 
 ### Results & Summary View (Three Tabs)

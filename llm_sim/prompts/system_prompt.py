@@ -8,6 +8,7 @@ def build_system_prompt(
     network_summary: str,
     application: str = "opflow",
     search_mode: str = "standard",
+    concurrent_pflow: bool = False,
 ) -> str:
     """Build the system prompt for the LLM agent.
 
@@ -16,13 +17,14 @@ def build_system_prompt(
         network_summary: Output of network_summary().
         application: ExaGO application name.
         search_mode: "standard" or "stress_test".
+        concurrent_pflow: Enable explore/select actions for PFLOW.
 
     Returns:
         Complete system prompt string.
     """
     if search_mode == "stress_test":
         return _build_stress_test_prompt(command_schema, network_summary, application)
-    return _build_standard_prompt(command_schema, network_summary, application)
+    return _build_standard_prompt(command_schema, network_summary, application, concurrent_pflow)
 
 
 _DC_OPF_SECTION = (
@@ -237,7 +239,7 @@ _SOPFLOW_SECTION = (
     "you have found the boundary."
 )
 
-_PFLOW_SECTION = (
+_PFLOW_SECTION_CORE = (
     "=== Power Flow (PFLOW) — Analysis, Not Optimization ===\n\n"
     "PFLOW solves the nonlinear power flow equations for a given network state. "
     "It does NOT optimise anything. There is no objective function, no cost minimisation, "
@@ -267,22 +269,6 @@ _PFLOW_SECTION = (
     "that will be solved.\n"
     "- PFLOW uses Newton-Raphson (not IPOPT). Convergence is reported as CONVERGED or "
     "DID NOT CONVERGE.\n\n"
-    "=== Search Heuristics for LLM-Driven Optimisation ===\n\n"
-    "Since PFLOW does not optimise, you must implement the search strategy yourself:\n\n"
-    "1. **Feasibility boundary (binary search):** To find the maximum load level before "
-    "infeasibility, scale loads incrementally. When PFLOW reports DID NOT CONVERGE, "
-    "reduce the scaling and try again. Binary search converges quickly — reduce the "
-    "gap by half each iteration and declare 'complete' when the gap is below 1%.\n\n"
-    "2. **Cost reduction (gradient-like):** To reduce generation cost while maintaining "
-    "feasibility, reduce expensive generator outputs and increase cheaper ones while "
-    "staying within Pmin/Pmax bounds. Check cost changes and feasibility after each "
-    "adjustment.\n\n"
-    "3. **Voltage improvement (iterative adjustment):** To improve voltage profile, "
-    "adjust set_gen_voltage on generators near buses with poor voltage. PFLOW will "
-    "enforce your setpoints. Increase Vg to raise bus voltages, decrease to lower them.\n\n"
-    "4. **Thermal relief (selective modification):** To reduce line loading, redistribute "
-    "generation using set_gen_dispatch, or disable overloaded lines with set_branch_status, "
-    "or reduce load with scale_load or scale_all_loads.\n\n"
     "=== New Commands for PFLOW ===\n\n"
     "In addition to the standard commands, PFLOW search has access to:\n"
     "- set_tap_ratio (command 14): Adjust transformer tap ratio. Only applies to branches "
@@ -310,12 +296,99 @@ _PFLOW_SECTION = (
     "- When PFLOW does not converge, the solution data may be absent or unreliable. "
     "Treat non-convergence as a clear signal that the current network state is infeasible.\n"
     "- Use set_all_bus_vlimits to define the acceptable voltage range for feasibility "
-    "checks, just like in OPFLOW.\n"
+    "checks, just like in OPFLOW."
+)
+
+_PFLOW_SEARCH_SEQUENTIAL = (
+    "\n\n=== Search Heuristics for LLM-Driven Optimisation ===\n\n"
+    "Since PFLOW does not optimise, you must implement the search strategy yourself:\n\n"
+    "1. **Feasibility boundary (binary search):** To find the maximum load level before "
+    "infeasibility, scale loads incrementally. When PFLOW reports DID NOT CONVERGE, "
+    "reduce the scaling and try again. Binary search converges quickly — reduce the "
+    "gap by half each iteration and declare 'complete' when the gap is below 1%.\n\n"
+    "2. **Cost reduction (gradient-like):** To reduce generation cost while maintaining "
+    "feasibility, reduce expensive generator outputs and increase cheaper ones while "
+    "staying within Pmin/Pmax bounds. Check cost changes and feasibility after each "
+    "adjustment.\n\n"
+    "3. **Voltage improvement (iterative adjustment):** To improve voltage profile, "
+    "adjust set_gen_voltage on generators near buses with poor voltage. PFLOW will "
+    "enforce your setpoints. Increase Vg to raise bus voltages, decrease to lower them.\n\n"
+    "4. **Thermal relief (selective modification):** To reduce line loading, redistribute "
+    "generation using set_gen_dispatch, or disable overloaded lines with set_branch_status, "
+    "or reduce load with scale_load or scale_all_loads.\n\n"
     "- Prefer 'fresh' mode for feasibility boundary searches (binary search). "
     "Prefer 'accumulative' mode for incremental cost/voltage tuning."
 )
 
-def _app_section(application: str) -> str:
+_PFLOW_SEARCH_CONCURRENT = (
+    "\n\n=== Search Heuristics for Concurrent PFLOW ===\n\n"
+    "Since PFLOW does not optimise, you must implement the search strategy. "
+    "With concurrent PFLOW, use the 'explore' action to test multiple points "
+    "simultaneously instead of testing one point per iteration:\n\n"
+    "1. **Feasibility boundary (parallel search):** Instead of sequential binary search, "
+    "use 'explore' to test 5-8 scaling factors spanning the search range in one round. "
+    "Select the best feasible variant, then 'explore' a narrower range. This replaces "
+    "N sequential iterations with log2(N) explore+select cycles.\n\n"
+    "2. **Cost reduction (parallel dispatch comparison):** Use 'explore' to test "
+    "multiple dispatch adjustments simultaneously — e.g., reducing different expensive "
+    "generators. Select the variant with the lowest feasible cost.\n\n"
+    "3. **Voltage improvement (parallel voltage sweep):** Use 'explore' to test "
+    "multiple Vg values at key buses simultaneously. Select the variant with the "
+    "best voltage profile.\n\n"
+    "4. **Thermal relief (parallel):** Use 'explore' to test different generation "
+    "redistributions and load reductions simultaneously.\n\n"
+    "- Always use 'explore' as your primary search action. Use 'modify' ONLY for "
+    "single-point changes when you are certain of the outcome."
+)
+
+_PFLOW_SECTION = _PFLOW_SECTION_CORE + _PFLOW_SEARCH_SEQUENTIAL
+
+_EXPLORE_PFLOW_SECTION = (
+    "\n\n=== Concurrent Neighborhood Search (Explore/Select) ===\n\n"
+    "Concurrent PFLOW is ENABLED. You MUST use the 'explore' action as your "
+    "primary search mechanism. The 'modify' action should only be used for "
+    "single-point changes when you are certain of the outcome.\n\n"
+    "The explore action evaluates multiple configurations simultaneously. "
+    "The system will:\n"
+    "- Run all variants concurrently\n"
+    "- Compute a Pareto front based on tracked objectives\n"
+    "- Present results with Pareto-optimal variants marked (★)\n\n"
+    "After an 'explore', you MUST choose one of:\n"
+    "- 'select' to adopt one variant as the new current point\n"
+    "- 'explore' again to test a different neighborhood\n"
+    "- 'analyze' to inspect results before choosing\n"
+    "- 'complete' to end the search\n\n"
+    "Required workflow:\n"
+    "- Use 'explore' with 3-8 variants to test different parameter values\n"
+    "- Use 'select' to adopt the best Pareto variant\n"
+    "- Repeat: explore → select → explore → ...\n"
+    "- Do NOT use 'modify' for search iterations — use 'explore' instead\n"
+    "- You can 'explore' with 'mode': 'fresh' to test variants from the base case\n\n"
+    "Explore is especially effective for:\n"
+    "- Binary/bisection search: test multiple scaling factors in one round instead of one at a time\n"
+    "- Voltage sweep: test different Vg values at key buses simultaneously\n"
+    "- Dispatch sweep: test different Pg values at generators simultaneously\n"
+    "- Load scaling sweep: test different scale_all_loads factors simultaneously\n"
+    "- Combined variations: each variant is an independent set of modifications\n\n"
+    "Example: For a feasibility boundary search, instead of testing one factor per "
+    "iteration with 'modify', propose 5 factors spanning the search range. The system "
+    "runs all 5 in parallel, identifies which are feasible, and you can then 'select' "
+    "the best and 'explore' a narrower range. This replaces sequential binary search "
+    "with parallel coordinate search, converging in fewer LLM round-trips."
+)
+
+_EXPLORE_PFLOW_SECTION_NO_CONCURRENT = (
+    "\n\n=== Search Strategy ===\n\n"
+    "Since concurrent PFLOW is not enabled, you must search one point at a time. "
+    "Use the 'modify' action for each test. Recommended strategies:\n"
+    "- For feasibility boundary searches: use binary search with 'fresh' mode\n"
+    "- For incremental tuning: use 'accumulative' mode\n"
+    "- Start with small changes, observe the effect, then adjust\n\n"
+    "Tip: If you need to test many parameter values, ask the operator to enable "
+    "concurrent PFLOW (--concurrent-pflow) to run multiple simulations in parallel."
+)
+
+def _app_section(application: str, concurrent_pflow: bool = False) -> str:
     """Return the application-specific prompt section for the given app."""
     if application == "dcopflow":
         return _DC_OPF_SECTION
@@ -326,7 +399,11 @@ def _app_section(application: str) -> str:
     if application == "sopflow":
         return _AC_OPF_VOLTAGE_SECTION + "\n\n" + _SOPFLOW_SECTION
     if application == "pflow":
-        return _PFLOW_SECTION
+        if concurrent_pflow:
+            result = _PFLOW_SECTION_CORE + _PFLOW_SEARCH_CONCURRENT + _EXPLORE_PFLOW_SECTION
+        else:
+            result = _PFLOW_SECTION_CORE + _PFLOW_SEARCH_SEQUENTIAL + _EXPLORE_PFLOW_SECTION_NO_CONCURRENT
+        return result
     return _AC_OPF_VOLTAGE_SECTION
 
 
@@ -344,23 +421,60 @@ def _build_standard_prompt(
     command_schema: str,
     network_summary: str,
     application: str,
+    concurrent_pflow: bool = False,
 ) -> str:
-    return f"""\
-You are a power systems analysis agent. You iteratively modify a power grid \
-network and run {application.upper()} simulations to achieve a user-specified goal.
+    if concurrent_pflow and application == "pflow":
+        _action_header = "You MUST respond with a single JSON object. Choose one of five actions:"
+        _action_section = """
+1. EXPLORE the neighborhood — evaluate multiple configurations concurrently (PREFERRED for search):
+{{
+  "action": "explore",
+  "reasoning": "Why these variants are worth testing.",
+  "mode": "fresh" or "accumulative",
+  "description": "Short description of the exploration",
+  "variants": [
+    {{"label": "A", "commands": [{{"action": "set_gen_voltage", "bus": 1, "Vg": 1.02}}]}},
+    {{"label": "B", "commands": [{{"action": "set_gen_voltage", "bus": 1, "Vg": 1.04}}]}},
+    {{"label": "C", "commands": [{{"action": "set_gen_voltage", "bus": 1, "Vg": 1.06}}]}}
+  ]
+}}
 
-=== Section A: Available Commands ===
+2. SELECT a variant — after explore, adopt one of the evaluated points as the new current point:
+{{
+  "action": "select",
+  "choice": "A",
+  "reasoning": "Why this variant is the best choice for the next iteration."
+}}
 
-{command_schema}
+3. MODIFY the network — apply a single change and run a simulation (use ONLY when you are certain of the outcome):
+{{
+  "action": "modify",
+  "reasoning": "Explanation of why these changes should help achieve the goal.",
+  "mode": "fresh" or "accumulative",
+  "description": "Short one-line description for the search journal",
+  "commands": [{{"action": "...", ...}}]
+}}
 
-=== Section B: Network Information ===
+4. COMPLETE the search — when the goal is achieved or determined infeasible:
+{{
+  "action": "complete",
+  "reasoning": "Explanation of why the search is done.",
+  "findings": {{
+    "summary": "Concise answer to the goal.",
+    "details": "Supporting data and observations."
+  }}
+}}
 
-{network_summary}
-
-=== Response Format ===
-
-You MUST respond with a single JSON object. Choose one of three actions:
-
+5. ANALYZE results — request specific data before deciding:
+{{
+  "action": "analyze",
+  "reasoning": "What information is needed and why.",
+  "query": "e.g. buses with voltage below 0.95"
+}}
+"""
+    else:
+        _action_header = "You MUST respond with a single JSON object. Choose one of three actions:"
+        _action_section = """
 1. MODIFY the network — apply changes and run a simulation:
 {{
   "action": "modify",
@@ -386,7 +500,24 @@ You MUST respond with a single JSON object. Choose one of three actions:
   "reasoning": "What information is needed and why.",
   "query": "e.g. buses with voltage below 0.95"
 }}
+"""
 
+    return f"""\
+You are a power systems analysis agent. You iteratively modify a power grid \
+network and run {application.upper()} simulations to achieve a user-specified goal.
+
+=== Section A: Available Commands ===
+
+{command_schema}
+
+=== Section B: Network Information ===
+
+{network_summary}
+
+=== Response Format ===
+
+{_action_header}
+{_action_section}
 === Rules ===
 
 - Be systematic: start with small changes, observe the effect, then adjust.
@@ -415,7 +546,7 @@ field in your JSON response (optional): \
 "propose_objectives": [{{"name": "<metric>", "direction": "minimize", "priority": "secondary"}}]
 - The operator can accept or reject proposed objectives via steering.
 
-{_app_section(application)}"""
+{_app_section(application, concurrent_pflow)}"""
 
 
 def _build_stress_test_prompt(

@@ -7,6 +7,7 @@ import logging
 from llm_sim.engine.agent_loop import AgentLoopController, SearchSession
 from llm_sim.engine.commands import ModCommand, parse_command
 from llm_sim.engine.executor import SimulationExecutor, SimulationResult
+from llm_sim.engine.explore import ExploreCache, VariantResult
 from llm_sim.engine.journal import JournalEntry, ObjectiveEntry, ObjectiveRegistry, SearchJournal
 from llm_sim.engine.metric_extractor import available_metrics, extract_all_metrics, extract_metric
 from llm_sim.engine.modifier import ModificationReport, apply_modifications
@@ -20,6 +21,7 @@ logger = logging.getLogger("llm_sim.engine")
 
 __all__ = [
     "AgentLoopController",
+    "ExploreCache",
     "JournalEntry",
     "ModCommand",
     "ModificationReport",
@@ -29,6 +31,7 @@ __all__ = [
     "SearchSession",
     "SimulationExecutor",
     "SimulationResult",
+    "VariantResult",
     "ValidationResult",
     "apply_modifications",
     "available_metrics",

@@ -116,6 +116,30 @@ Key differences from OPFLOW and other optimization applications:
 
 PFLOW is available from the CLI (`--app pflow`) and in the launcher GUI application dropdown. No additional files (contingency, profile, or scenario) are required — only the base case `.m` file.
 
+### Concurrent PFLOW (Explore/Select)
+
+When `--concurrent-pflow` is enabled, the LLM can propose multiple simulation variants per iteration and run them concurrently. This replaces sequential binary search with parallel coordinate search, reducing the number of LLM round-trips needed to converge.
+
+**Why it matters:** In sequential search, each iteration takes one LLM round-trip (~20-30s) but only ~0.02s of simulation time. The LLM is the bottleneck, not the simulation. Concurrent explore lets the LLM evaluate 3-8 configurations per round-trip, converging on solutions in half the wall-clock time.
+
+**How it works:**
+1. The LLM proposes an **explore** action with 2–8 variant command sets (e.g., different load scaling factors)
+2. The system runs all simulations concurrently via ThreadPoolExecutor
+3. Results are presented with Pareto front analysis (★ marks non-dominated variants)
+4. The LLM **selects** one variant as the new current point
+5. Repeat: explore → select → explore → ...
+
+**CLI usage:**
+```bash
+llm-sim ./data/case_ACTIVSg200.m \
+  "Find the maximum load scaling factor" \
+  --app pflow --concurrent-pflow --max-variants 5
+```
+
+**Launcher GUI:** Enable the "Concurrent explore/select" checkbox in the sidebar (PFLOW only) and set "Max variants per explore" (2-16, default 8).
+
+The system prompt dynamically restructures when concurrent mode is on: explore is presented as action #1 (primary), with sequential search heuristics replaced by parallel search guidance. This ensures the LLM uses explore as its default search mechanism rather than falling back to sequential modify actions.
+
 ## Multi-Objective Tracking
 
 LLM-Sim can track multiple objectives simultaneously and reason about tradeoffs between them. Objectives can be introduced in three ways:

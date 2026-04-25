@@ -41,6 +41,7 @@ class JournalEntry:
     solver: str = ""  # Solver used (IPOPT, EMPAR, etc.)
     num_steps: int = 0  # TCOPFLOW: number of time periods
     num_scenarios: int = 0  # SOPFLOW: number of wind scenarios
+    explored_variants: Optional[list[dict]] = None  # Explore/select: companion variants
 
 
 @dataclass
@@ -167,6 +168,7 @@ class SearchJournal:
         steering_directive: Optional[str] = None,
         num_steps: int = 0,
         num_scenarios: int = 0,
+        explored_variants: Optional[list[dict]] = None,
     ) -> JournalEntry:
         """Create and append a journal entry from OPFLOW results.
 
@@ -217,6 +219,7 @@ class SearchJournal:
                 solver=opflow_result.solver,
                 num_steps=num_steps,
                 num_scenarios=num_scenarios,
+                explored_variants=explored_variants,
             )
         else:
             entry = JournalEntry(
@@ -239,6 +242,7 @@ class SearchJournal:
                 feasibility_detail="infeasible",
                 num_steps=num_steps,
                 num_scenarios=num_scenarios,
+                explored_variants=explored_variants,
             )
 
         self._entries.append(entry)
@@ -542,6 +546,7 @@ class SearchJournal:
             "total_gen_mw", "total_load_mw", "llm_reasoning",
             "mode", "elapsed_seconds", "timestamp", "steering_directive",
             "tracked_metrics", "feasibility_detail", "solver", "num_steps", "num_scenarios",
+            "explored_variants",
         ]
 
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -551,6 +556,7 @@ class SearchJournal:
                 row = asdict(e)
                 row["commands"] = json.dumps(row["commands"])
                 row["tracked_metrics"] = json.dumps(row.get("tracked_metrics") or {})
+                row["explored_variants"] = json.dumps(row.get("explored_variants") or [])
                 writer.writerow(row)
 
         logger.info("Journal CSV exported to %s (%d entries)", path, len(self._entries))

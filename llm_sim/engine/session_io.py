@@ -18,7 +18,7 @@ from llm_sim.parsers.matpower_parser import parse_matpower
 
 logger = logging.getLogger("llm_sim.engine.session_io")
 
-SESSION_FORMAT_VERSION = "1.0"
+SESSION_FORMAT_VERSION = "1.1"
 
 
 def save_session(
@@ -45,6 +45,7 @@ def save_session(
     sopflow_scenario_override: str | None = None,
     tcopflow_profile_overrides: dict[str, str] | None = None,
     benchmark_result: dict | None = None,
+    explore_cache_info: dict | None = None,
 ) -> Path:
     """Save a search session to disk for later resumption.
 
@@ -101,6 +102,7 @@ def save_session(
         "sopflow_scenario_override": sopflow_scenario_override,
         "tcopflow_profile_overrides": tcopflow_profile_overrides,
         "benchmark_result": benchmark_result,
+        "explore_cache_info": explore_cache_info,
         "journal": {
             "entries": [asdict(e) for e in journal.entries],
             "objective_registry": journal.objective_registry.to_dict_list(),
@@ -141,7 +143,7 @@ def load_session(save_dir: Path) -> dict[str, Any]:
     raw = json.loads(session_path.read_text(encoding="utf-8"))
 
     version = raw.get("format_version", "0")
-    if version != SESSION_FORMAT_VERSION:
+    if version not in ("1.0", SESSION_FORMAT_VERSION):
         raise ValueError(
             f"Unsupported session format version '{version}' "
             f"(expected '{SESSION_FORMAT_VERSION}')"
@@ -173,6 +175,7 @@ def load_session(save_dir: Path) -> dict[str, Any]:
             solver=entry_data.get("solver", ""),
             num_steps=entry_data.get("num_steps", 0),
             num_scenarios=entry_data.get("num_scenarios", 0),
+            explored_variants=entry_data.get("explored_variants"),
         )
         journal_entries.append(entry)
 
@@ -224,4 +227,5 @@ def load_session(save_dir: Path) -> dict[str, Any]:
         "sopflow_scenario_override": raw.get("sopflow_scenario_override"),
         "tcopflow_profile_overrides": raw.get("tcopflow_profile_overrides"),
         "benchmark_result": raw.get("benchmark_result"),
+        "explore_cache_info": raw.get("explore_cache_info"),
     }

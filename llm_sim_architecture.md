@@ -433,6 +433,90 @@ Key finding: the `set_all_bus_vlimits` command was essential for this test case 
 | 4.2 | Extended command set | `set_tap_ratio` (transformer taps), `set_shunt_susceptance` (bus shunt Bs), `set_phase_shift_angle` (phase shifters); validation rejects non-transformer/non-shifter targets; `set_gen_voltage` behavior differs for PFLOW (constrains voltage directly, not initial guess) | ✅ |
 | 4.3 | Optimization prompt templates | Dedicated `_PFLOW_SECTION` explaining PFLOW is analysis not optimization; LLM is the optimizer; search heuristics (binary search, gradient-like, iterative adjustment); new commands 14–16 documented | ✅ |
 | 4.4 | Benchmark vs. OPFLOW | Compare LLM-driven PFLOW vs. OPFLOW optimal solutions | Planned |
+| 4.5 | Concurrent PFLOW (explore/select) | LLM proposes multiple variant configurations per iteration; system runs them concurrently via ThreadPoolExecutor; Pareto front identifies non-dominated variants; LLM selects best variant as new current point; replaces sequential binary search with parallel coordinate search | ✅ |
+
+### Phase 4.5 — Concurrent PFLOW Explore/Select Design
+
+#### Concept
+
+Traditional PFLOW search uses one `modify` action per iteration, testing a single parameter change. This makes binary search for feasibility boundaries inherently sequential: each iteration takes one LLM round-trip (~20-30s) but only ~0.02s of simulation time. The LLM round-trip is the bottleneck.
+
+Concurrent PFLOW introduces two new actions:
+
+| Action | Description |
+|--------|-------------|
+| `explore` | LLM proposes 2–8 variant command sets (each an independent set of modifications). System runs all simulations concurrently via ThreadPoolExecutor. Results are presented with Pareto front analysis. |
+| `select` | LLM selects one variant from the explore results as the new current point. The selected variant's modified network becomes `_current_network` and a journal entry is recorded. |
+
+Each explore+select cycle costs **one iteration** against `max_iterations`, but evaluates N configurations. The LLM roundtrip cost is amortized across N simulations.
+
+#### Architecture
+
+| Component | File | Description |
+|-----------|------|-------------|
+| `ParetoCandidate` + `pareto_filter()` | `llm_sim/engine/pareto.py` | Non-dominated sorting over variant results. Feasible candidates dominate infeasible ones. Default objective: lowest generation cost. Multi-objective: uses registered objective directions. |
+| `VariantResult` + `ExploreCache` | `llm_sim/engine/explore.py` | Data structures for explore results. `ExploreCache` holds all variant results between explore and select actions. |
+| `format_variant_results()` | `llm_sim/engine/explore.py` | Formats variant comparison table for LLM prompt with Pareto ★ markers. |
+| `_handle_explore()` | `llm_sim/engine/agent_loop.py` | Parses variant command lists, applies each to a deep copy of the base/current network, runs all simulations concurrently via `run_parallel()`, computes Pareto front, stores results in `_explore_cache`. |
+| `_handle_select()` | `llm_sim/engine/agent_loop.py` | Validates selection against cache, updates `_current_network` to selected variant's network, creates journal entry with `explored_variants` metadata, clears cache. |
+| `SimulationExecutor.run_parallel()` | `llm_sim/engine/executor.py` | Thin ThreadPoolExecutor wrapper that runs N simulations concurrently. Each simulation is an independent subprocess. |
+| System prompt | `llm_sim/prompts/system_prompt.py` | Dynamic action schema (5 actions for concurrent PFLOW vs 3 for standard). `explore` is action #1 (primary) when concurrent mode is on. Search heuristics are rewritten to recommend parallel search patterns. |
+
+#### Search Strategy
+
+When concurrent PFLOW is enabled, the system prompt is restructured:
+
+- **Standard mode (concurrent off):** "Choose one of three actions: modify, complete, analyze" + sequential search heuristics (binary search with modify)
+- **Concurrent mode (on):** "Choose one of five actions: explore, select, modify, complete, analyze" + parallel search heuristics (explore with multiple factors, select best, explore narrower range)
+
+This ensures the LLM uses `explore` as its primary search mechanism rather than falling back to sequential `modify` actions.
+
+#### Config and CLI
+
+| Parameter | Default | CLI Flag | Purpose |
+|-----------|---------|----------|---------|
+| `search.concurrent_pflow` | `False` | `--concurrent-pflow` | Enable explore/select for PFLOW |
+| `search.max_variants` | `8` | `--max-variants N` | Maximum variants per explore action (2–16) |
+
+#### Launcher UI
+
+- **"Concurrent explore/select" checkbox** in sidebar (PFLOW only)
+- **"Max variants per explore" number input** (2–16, default 8, enabled only when concurrent is checked)
+- **Explore status panel** in live monitor showing variant labels, feasibility, voltage ranges, Pareto ★ markers
+- **Phase indicator** shows "Running 5 variants..." during concurrent simulation
+- **Iteration log** shows explored variants summary for `select` entries
+
+#### Data Model
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `JournalEntry.explored_variants` | `Optional[list[dict]]` | For `select` entries: `[{label, feasible, cost}]` for all variants explored, enabling CSV/JSON traceability |
+| `ExploreCache` | dataclass | Temporary in-memory cache between explore and select; not persisted to session (variant results too large). Metadata saved as `explore_cache_info` in session JSON. |
+
+#### Session Persistence
+
+- `explore_cache_info` dict saved in session JSON with variant labels, description, and iteration number
+- On resume: explore cache is cleared (variant results are too large to persist). The LLM must re-explore.
+- Session format version bumped to `1.1` for backward compatibility with `1.0`
+- Journal CSV includes `explored_variants` column
+
+#### Pareto Front Computation
+
+The `pareto_filter()` function uses standard Pareto dominance:
+
+- A feasible candidate dominates an infeasible candidate
+- Among feasible candidates, A dominates B iff A is ≥ B on all objectives and > B on at least one
+- Direction-aware: `"minimize"` → lower is better; `"maximize"` → higher is better
+- Default (no objectives registered): use `generation_cost` with direction `"minimize"`
+
+For PFLOW, when objectives are registered (e.g., `load_scaling_factor` maximize + `max_line_loading_pct` constraint), the Pareto front identifies variants that trade off load increase against thermal loading.
+
+#### Test Coverage
+
+| Test file | Classes | Count |
+|-----------|---------|-------|
+| `tests/test_pareto.py` | `TestDominates`, `TestParetoFilter` | 21 |
+| `tests/test_explore.py` | `TestFormatVariantResults`, `TestComputeParetoLabels`, `TestExploreCache`, `TestConfigConcurrentPflow`, `TestSystemPromptConcurrent`, `TestSystemPromptConcurrentMode`, `TestUserPromptExploreText`, `TestJournalExploredVariants`, `TestSessionExplorePersistence`, `TestExploreHandlerValidation`, `TestRunParallel`, `TestConcurrentPflowCLI` | 23 |
 
 ### Phase 5 — ExaGO Integration
 
@@ -482,3 +566,4 @@ This document serves as shared context between the human developer, Claude (brai
 - **SOPFLOW convergence override:** SOPFLOW output may not include an IPOPT EXIT message, causing the OPFLOW parser (which checks for exit status) to set `converged=False` even when the header says "CONVERGED". The SOPFLOW parser must override this based on the `convergence_status` header field, similar to SCOPFLOW.
 - **Near-boundary feasibility classification:** Both TCOPFLOW and SOPFLOW can produce non-converged results where the solver is very close to feasibility (e.g., voltage within 0.01 pu of a limit). Classifying these as straightforward "infeasible" would miss boundary markers that are critical for feasibility boundary searches. The `_is_near_boundary()` heuristic checks voltage proximity (within 0.01 pu of limits) and line loading (within 5% of 100%) to classify such results as "marginal" rather than "infeasible", enabling binary search convergence guidance in the system prompt.
 - **PFLOW is analysis, not optimization:** PFLOW does not minimise cost — it solves the power flow equations for a given network state. This means `set_gen_voltage` directly constrains bus voltage (the opposite of OPFLOW where it is just an initial guess). The LLM must serve as the optimizer: proposing dispatch changes, evaluating feasibility, and deciding next steps. The system prompt includes search heuristics (binary search for boundaries, gradient-like adjustments for cost reduction, iterative tuning for voltage improvement). Generation cost is computed from dispatch × cost curves via `compute_generation_cost()`, not from an objective value. The `generation_cost` metric is excluded from PFLOW's available metrics to avoid confusion with the always-zero `objective_value`. The launcher UI handles PFLOW's zero objective value by showing feasibility-based summaries instead of cost-based metrics.
+- **Concurrent PFLOW prompt structure matters:** When `concurrent_pflow` is enabled, the system prompt must present `explore` as the primary search action (action #1), not as an optional add-on after `modify`. If `modify` is listed first and described as the default, the LLM will use sequential binary search instead of parallel explore even though explore is available. The prompt must also replace sequential search heuristics ("binary search with modify") with parallel search heuristics ("use explore to test multiple factors in one round"). Without these changes, the LLM ignores the explore action despite it being available and more efficient.

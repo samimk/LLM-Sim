@@ -277,6 +277,25 @@ class TestCLIDryRun:
         assert result.returncode == 0
         assert "Resolved configuration" in result.stdout
 
+    def test_dry_run_concurrent_pflow(self):
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "llm_sim",
+                "data/case_ACTIVSg200.m", "test pflow goal",
+                "--app", "pflow",
+                "--concurrent-pflow",
+                "--max-variants", "4",
+                "--dry-run",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
+            timeout=10,
+        )
+        assert result.returncode == 0
+        assert "concurrent_pflow: True" in result.stdout
+        assert "max_variants: 4" in result.stdout
+
     def test_version(self):
         result = subprocess.run(
             [sys.executable, "-m", "llm_sim", "--version"],

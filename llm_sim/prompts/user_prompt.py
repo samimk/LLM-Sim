@@ -12,6 +12,7 @@ def build_user_prompt(
     error_feedback: Optional[str] = None,
     steering_directives: list[dict] | None = None,
     multi_objective_text: Optional[str] = None,
+    explore_text: Optional[str] = None,
 ) -> str:
     """Build the user prompt for one iteration.
 
@@ -23,6 +24,8 @@ def build_user_prompt(
         steering_directives: List of active steering directive dicts
             with keys "directive" and "mode", or None.
         multi_objective_text: Formatted multi-objective tracking context, or None.
+        explore_text: Formatted variant comparison table from an explore action,
+            or None. When set, replaces Section D in the prompt.
 
     Returns:
         Complete user prompt string.
@@ -39,7 +42,10 @@ def build_user_prompt(
         parts.append("=== Section E: Multi-Objective Tracking ===")
         parts.append(multi_objective_text)
 
-    if results_text:
+    if explore_text:
+        parts.append("")
+        parts.append(explore_text)
+    elif results_text:
         parts.append("")
         parts.append("=== Section D: Latest Results ===")
         parts.append(results_text)

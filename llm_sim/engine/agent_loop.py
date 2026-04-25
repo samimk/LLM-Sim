@@ -17,6 +17,12 @@ from llm_sim.backends.base import LLMBackend, LLMResponse
 from llm_sim.config import AppConfig
 from llm_sim.engine.commands import parse_command
 from llm_sim.engine.executor import SimulationExecutor, SimulationResult
+from llm_sim.engine.explore import (
+    ExploreCache,
+    VariantResult,
+    compute_pareto_labels,
+    format_variant_results,
+)
 from llm_sim.engine.journal import JournalEntry, ObjectiveEntry, SearchJournal
 from llm_sim.engine.metric_extractor import available_metrics, available_metrics_for_app, extract_all_metrics
 from llm_sim.engine.modifier import apply_modifications
@@ -128,6 +134,7 @@ class AgentLoopController:
         on_iteration: Callable[[int, JournalEntry, str, OPFLOWResult | None], None] | None = None,
         on_phase: Callable[[int, str], None] | None = None,
         on_pause_state: Callable[[bool], None] | None = None,
+        on_explore: Callable[[int, list[dict]], None] | None = None,
     ) -> None:
         self._config = config
         self._backend: LLMBackend = create_backend(config.llm)
@@ -137,6 +144,7 @@ class AgentLoopController:
         self._on_iteration = on_iteration
         self._on_phase = on_phase
         self._on_pause_state = on_pause_state
+        self._on_explore = on_explore
         self._stop_requested = False
 
         # Steering
@@ -168,6 +176,7 @@ class AgentLoopController:
         self._tcopflow_profile_overrides: dict[str, Path] = {}
         self._sopflow_num_scenarios: int = 0
         self._sopflow_scenario_override: Optional[Path] = None
+        self._explore_cache: Optional[ExploreCache] = None
 
     # ------------------------------------------------------------------
     # Output helper
@@ -298,6 +307,7 @@ class AgentLoopController:
             network_summary=net_summary_text,
             application=self._config.search.application,
             search_mode=self._config.search.search_mode,
+            concurrent_pflow=self._config.search.concurrent_pflow,
         )
 
         self._current_goal = goal
@@ -557,17 +567,23 @@ class AgentLoopController:
 
         # Dispatch action
         if action == "modify":
+            self._explore_cache = None
             return self._handle_modify(iteration, data)
+        elif action == "explore":
+            return self._handle_explore(iteration, data)
+        elif action == "select":
+            return self._handle_select(iteration, data)
         elif action == "complete":
             return self._handle_complete(iteration, data)
         elif action == "analyze":
             return self._handle_analyze(iteration, data)
         else:
             self._print(f"[Iter {iteration}] Unknown action: '{action}'")
-            self._error_feedback = (
-                f"Unknown action '{action}'. "
-                f"Valid actions: modify, complete, analyze."
-            )
+            valid = "modify, explore, select, complete, analyze"
+            if self._config.search.concurrent_pflow and self._config.search.application == "pflow":
+                self._error_feedback = f"Unknown action '{action}'. Valid actions: {valid}."
+            else:
+                self._error_feedback = f"Unknown action '{action}'. Valid actions: modify, complete, analyze."
             return "error", True
 
     # ------------------------------------------------------------------
@@ -776,6 +792,313 @@ class AgentLoopController:
                 self._journal.latest.tracked_metrics = metrics
 
         return "modify", True
+
+    def _handle_explore(
+        self, iteration: int, data: dict
+    ) -> tuple[str, bool]:
+        """Handle an 'explore' action — evaluate multiple variants concurrently."""
+        if not self._config.search.concurrent_pflow or self._config.search.application != "pflow":
+            self._print(f"[Iter {iteration}] 'explore' requires --concurrent-pflow with pflow application")
+            self._error_feedback = (
+                "The 'explore' action requires concurrent PFLOW mode "
+                "(--concurrent-pflow flag). Use 'modify' for single-point changes."
+            )
+            return "error", True
+
+        description = data.get("description", "Neighborhood exploration")
+        reasoning = data.get("reasoning", "")
+        mode = data.get("mode", self._config.search.default_mode)
+        raw_variants = data.get("variants", [])
+
+        self._print(f'[Iter {iteration}] LLM action: explore — "{description}"')
+
+        max_variants = self._config.search.max_variants
+
+        # Validate variant count
+        if not isinstance(raw_variants, list) or len(raw_variants) < 2:
+            self._print(f"[Iter {iteration}] explore requires at least 2 variants, got {len(raw_variants) if isinstance(raw_variants, list) else 0}")
+            self._error_feedback = (
+                "The 'explore' action requires at least 2 variants. "
+                "Each variant must have a 'label' and 'commands' list."
+            )
+            return "error", True
+
+        if len(raw_variants) > max_variants:
+            self._print(f"[Iter {iteration}] Truncating {len(raw_variants)} variants to max_variants={max_variants}")
+            raw_variants = raw_variants[:max_variants]
+
+        if self._on_phase:
+            self._on_phase(iteration, "applying_commands")
+
+        # Choose base network
+        if mode == "fresh":
+            base_net = self._base_network
+            self._tcopflow_profile_overrides = {}
+            self._sopflow_scenario_override = None
+        else:
+            base_net = self._current_network
+
+        # Parse and apply each variant
+        variant_results: dict[str, VariantResult] = {}
+        sim_tasks: list[tuple[MATNetwork, str, int, list[str] | None]] = []
+        sim_labels: list[str] = []
+        all_errors: list[str] = []
+        all_warnings: list[str] = []
+
+        for raw_v in raw_variants:
+            label = raw_v.get("label", "")
+            if not label:
+                label = chr(ord("A") + len(variant_results))
+            raw_cmds = raw_v.get("commands", [])
+            v_desc = raw_v.get("description", label)
+
+            commands: list = []
+            parse_errors: list[str] = []
+            for raw in raw_cmds:
+                try:
+                    commands.append(parse_command(raw))
+                except ValueError as exc:
+                    parse_errors.append(f"Variant {label}: Invalid command {raw}: {exc}")
+
+            if parse_errors:
+                all_errors.extend(parse_errors)
+                continue
+
+            if commands:
+                modified_net, report = apply_modifications(
+                    base_net, commands, application=self._config.search.application,
+                )
+                applied = len(report.applied)
+                skipped = len(report.skipped)
+                self._print(f"[Iter {iteration}] Variant {label}: {applied} command(s) applied, {skipped} skipped")
+                all_warnings.extend(report.warnings)
+                if report.skipped:
+                    for cmd, reasons in report.skipped:
+                        all_errors.append(f"Variant {label}: Skipped {cmd}: {'; '.join(reasons)}")
+            else:
+                modified_net = base_net
+
+            # Use negative iteration numbers to create distinct workdirs for each variant
+            variant_iter = -(iteration * max_variants + len(sim_tasks))
+
+            gencost_for_summary = modified_net.gencost if self._config.search.application == "pflow" else None
+
+            sim_tasks.append((
+                modified_net,
+                self._config.search.application,
+                variant_iter,
+                self._build_extra_args(),
+            ))
+            sim_labels.append(label)
+
+            variant_results[label] = VariantResult(
+                label=label,
+                description=v_desc,
+                commands=commands,
+                raw_commands=raw_cmds,
+                modified_net=modified_net,
+                sim_result=None,
+                opflow_result=None,
+            )
+
+        if len(sim_tasks) < 2:
+            self._error_feedback = (
+                "Not enough valid variants to explore. At least 2 variants with "
+                "valid commands are required."
+            )
+            if all_errors:
+                self._error_feedback += "\n" + "\n".join(all_errors[:5])
+            return "error", True
+
+        # Run simulations concurrently
+        if self._on_phase:
+            if len(sim_tasks) > 1:
+                self._on_phase(iteration, f"running_simulation ({len(sim_tasks)} variants)")
+            else:
+                self._on_phase(iteration, "running_simulation")
+        self._print(f"[Iter {iteration}] Running {len(sim_tasks)} simulations concurrently...")
+
+        results_map = self._executor.run_parallel(
+            sim_tasks, max_workers=min(self._config.search.max_variants, len(sim_tasks)),
+        )
+
+        # Parse results
+        for idx, (label, v) in enumerate(variant_results.items()):
+            sim_result = results_map.get(idx)
+            if sim_result is None:
+                continue
+            v.sim_result = sim_result
+
+            opflow = parse_simulation_result_for_app(
+                sim_result,
+                application=self._config.search.application,
+                bus_limits=_bus_limits_from_network(v.modified_net),
+            )
+            v.opflow_result = opflow
+
+            if opflow is not None:
+                self._print(
+                    f"[Iter {iteration}] Variant {label}: {opflow.convergence_status}, "
+                    f"feasibility={opflow.feasibility_detail}"
+                )
+            else:
+                err_msg = sim_result.error_message or "simulation failed"
+                self._print(f"[Iter {iteration}] Variant {label}: FAILED — {err_msg}")
+
+        # Compute Pareto front
+        if self._on_phase:
+            self._on_phase(iteration, "computing_pareto_front")
+        gencost = base_net.gencost if self._config.search.application == "pflow" else None
+        pareto_labels = compute_pareto_labels(
+            variant_results, self._journal.objective_registry.objectives, gencost,
+        )
+
+        # Build results text
+        self._latest_results_text = format_variant_results(
+            variant_results, pareto_labels, gencost,
+        )
+
+        # Store explore cache
+        self._explore_cache = ExploreCache(
+            variants=variant_results,
+            description=description,
+            reasoning=reasoning,
+            iteration=iteration,
+            base_network_snapshot=base_net,
+            base_mode=mode,
+        )
+
+        self._latest_opflow = None
+        if pareto_labels and pareto_labels[0] in variant_results:
+            best = variant_results[pareto_labels[0]]
+            if best.opflow_result is not None:
+                self._latest_opflow = best.opflow_result
+
+        self._print(
+            f"[Iter {iteration}] Explored {len(variant_results)} variants. "
+            f"Pareto: {', '.join(pareto_labels) if pareto_labels else 'none'}"
+        )
+
+        # Notify UI about explore results
+        if self._on_explore:
+            variant_summaries = []
+            for lbl, v in variant_results.items():
+                summary = {"label": lbl, "feasible": False}
+                if v.opflow_result is not None:
+                    summary["feasible"] = v.opflow_result.feasibility_detail == "feasible"
+                    summary["convergence_status"] = v.opflow_result.convergence_status
+                    summary["voltage_min"] = v.opflow_result.voltage_min
+                    summary["voltage_max"] = v.opflow_result.voltage_max
+                    summary["max_line_loading_pct"] = v.opflow_result.max_line_loading_pct
+                    summary["violations_count"] = v.opflow_result.num_violations
+                summary["is_pareto"] = v.is_pareto
+                variant_summaries.append(summary)
+            self._on_explore(iteration, variant_summaries)
+
+        if all_warnings:
+            warning_text = "Warnings:\n" + "\n".join(all_warnings[:5])
+            if self._error_feedback:
+                self._error_feedback += "\n\n" + warning_text
+            else:
+                self._error_feedback = warning_text
+
+        return "explore", True
+
+    def _handle_select(
+        self, iteration: int, data: dict
+    ) -> tuple[str, bool]:
+        """Handle a 'select' action — choose a variant from explore results."""
+        if self._explore_cache is None:
+            self._print(f"[Iter {iteration}] 'select' without prior 'explore'")
+            self._error_feedback = (
+                "No explore results to select from. Use 'explore' before 'select'."
+            )
+            return "error", True
+
+        choice = data.get("choice", "")
+        reasoning = data.get("reasoning", "")
+
+        cache = self._explore_cache
+
+        if choice not in cache.variants:
+            available = sorted(cache.variants.keys())
+            self._print(f"[Iter {iteration}] Invalid variant choice: '{choice}'")
+            self._error_feedback = (
+                f"Invalid variant '{choice}'. Available variants: {', '.join(available)}. "
+                "Respond with a 'select' action choosing one of these."
+            )
+            return "error", True
+
+        selected = cache.variants[choice]
+        self._print(f'[Iter {iteration}] Selected variant {choice} — "{selected.description}"')
+
+        # Update current state
+        self._current_network = selected.modified_net
+        self._latest_opflow = selected.opflow_result
+        if selected.opflow_result is not None:
+            self._opflow_results_cache[iteration] = selected.opflow_result
+            self._latest_results_text = results_summary_for_app(
+                selected.opflow_result,
+                self._config.search.application,
+                num_contingencies=self._scopflow_num_contingencies,
+                num_steps=self._tcopflow_num_steps,
+                duration_min=self._tcopflow_duration_min,
+                dT_min=self._tcopflow_dT_min,
+                is_coupling=self._tcopflow_is_coupling,
+                period_data=self._tcopflow_period_data if self._tcopflow_period_data else None,
+                num_scenarios=self._sopflow_num_scenarios,
+                gencost=selected.modified_net.gencost if self._config.search.application == "pflow" else None,
+            )
+
+        # Build explored-variants summary for journal
+        explored_variants = []
+        gencost = (
+            (cache.base_network_snapshot.gencost if cache.base_network_snapshot else None)
+            if self._config.search.application == "pflow" else None
+        )
+        for lbl, v in cache.variants.items():
+            entry = {"label": lbl}
+            if v.opflow_result is not None:
+                entry["feasible"] = v.opflow_result.feasibility_detail == "feasible"
+                if gencost is not None:
+                    try:
+                        entry["cost"] = v.opflow_result.compute_generation_cost(gencost)
+                    except Exception:
+                        pass
+            else:
+                entry["feasible"] = False
+            explored_variants.append(entry)
+
+        # Add journal entry for the selected variant
+        active_directive = (
+            self._active_steering_directives[-1]["directive"]
+            if self._active_steering_directives else None
+        )
+        self._journal.add_from_results(
+            iteration=iteration,
+            description=f"[select {choice}] {cache.description}",
+            commands=selected.raw_commands,
+            opflow_result=selected.opflow_result,
+            sim_elapsed=selected.sim_result.elapsed_seconds if selected.sim_result else 0.0,
+            llm_reasoning=f"Selected variant {choice}. {reasoning}",
+            mode=cache.base_mode,
+            steering_directive=active_directive,
+            num_steps=self._tcopflow_num_steps,
+            num_scenarios=self._sopflow_num_scenarios,
+            explored_variants=explored_variants,
+        )
+
+        # Extract tracked metrics for multi-objective tracking
+        if selected.opflow_result is not None and self._journal.latest:
+            metric_names = [o.name for o in self._journal.objective_registry.objectives]
+            metrics = extract_all_metrics(selected.opflow_result, metric_names)
+            if metrics:
+                self._journal.latest.tracked_metrics = metrics
+
+        # Clear explore cache
+        self._explore_cache = None
+
+        return "select", True
 
     def _handle_complete(
         self, iteration: int, data: dict
@@ -1254,6 +1577,11 @@ class AgentLoopController:
                 parts.append(mo_summary)
             multi_obj_text = "\n".join(parts)
 
+        # If explore cache is active, inject variant comparison text
+        explore_text = None
+        if self._explore_cache is not None and self._latest_results_text is not None:
+            explore_text = self._latest_results_text
+
         user_prompt = build_user_prompt(
             goal=goal,
             journal_text=journal_text,
@@ -1261,6 +1589,7 @@ class AgentLoopController:
             error_feedback=error_feedback,
             steering_directives=steering_directives,
             multi_objective_text=multi_obj_text,
+            explore_text=explore_text,
         )
         return self._system_prompt, user_prompt
 
@@ -1536,9 +1865,28 @@ class AgentLoopController:
             network_summary=net_summary_text,
             application=self._config.search.application,
             search_mode=self._config.search.search_mode,
+            concurrent_pflow=self._config.search.concurrent_pflow,
         )
 
         self._latest_results_text = None
+
+        # Handle explore cache: if an explore was in progress at save time,
+        # clear it — the variant results cannot be fully restored, so the
+        # LLM will need to re-explore from the current network state.
+        self._explore_cache = None
+        explore_info = saved.get("explore_cache_info")
+        if explore_info and explore_info.get("was_active"):
+            labels = explore_info.get("variant_labels", [])
+            self._print(
+                f"[Resume] Note: an explore action was in progress at save time "
+                f"(iteration {explore_info.get('iteration', '?')}, "
+                f"variants: {', '.join(labels)}). The variant results have been "
+                f"discarded — the LLM will need to re-explore."
+            )
+            logger.info(
+                "Cleared explore cache from saved session (variants: %s)",
+                labels,
+            )
 
         last_iteration = saved["last_iteration"]
 
@@ -1609,6 +1957,27 @@ class AgentLoopController:
         self._finalize(session, elapsed)
         return session
 
+    def _serialize_explore_cache(self) -> dict | None:
+        """Serialize explore cache metadata for session persistence.
+
+        The full variant results (networks, simulation results) are not
+        persisted because they're too large. On resume, the explore cache
+        is cleared and the LLM starts fresh from the current network.
+        We save only enough metadata to know an explore was in progress
+        and log a warning on resume.
+        """
+        if self._explore_cache is None:
+            return None
+        cache = self._explore_cache
+        return {
+            "was_active": True,
+            "description": cache.description,
+            "reasoning": cache.reasoning,
+            "iteration": cache.iteration,
+            "variant_labels": list(cache.variants.keys()),
+            "base_mode": cache.base_mode,
+        }
+
     def save_session(self, save_dir: Path, config_path: Path | str | None = None) -> Path:
         """Save the current search state to disk for later resumption.
 
@@ -1654,4 +2023,5 @@ class AgentLoopController:
             sopflow_num_scenarios=self._sopflow_num_scenarios,
             sopflow_scenario_override=str(self._sopflow_scenario_override) if self._sopflow_scenario_override else None,
             tcopflow_profile_overrides={k: str(v) for k, v in self._tcopflow_profile_overrides.items()} if self._tcopflow_profile_overrides else None,
+            explore_cache_info=self._serialize_explore_cache(),
         )

@@ -60,6 +60,8 @@ DEFAULTS: dict[str, Any] = {
         "sopflow_iscoupling": 0,
         "application": "opflow",
         "search_mode": "standard",
+        "concurrent_pflow": False,
+        "max_variants": 8,
     },
     "output": {
         "workdir": "./workdir",
@@ -126,6 +128,8 @@ class SearchConfig:
     sopflow_solver: str = "IPOPT"  # Solver for SOPFLOW: IPOPT or EMPAR
     sopflow_iscoupling: int = 0  # Coupling between first/second stage (0=off, 1=on) for SOPFLOW
     benchmark_opflow: bool = False  # Run OPFLOW benchmark after PFLOW search
+    concurrent_pflow: bool = False  # Enable concurrent explore/select for PFLOW
+    max_variants: int = 8  # Max variants per explore action (range: 2-16)
 
 
 @dataclass(frozen=True)
@@ -356,3 +360,19 @@ def _validate(cfg: AppConfig) -> None:
                 "SOPFLOW with EMPAR solver typically requires mpi_np >= 2 "
                 "(currently mpi_np=%d).", cfg.exago.mpi_np,
             )
+
+    if cfg.search.concurrent_pflow and cfg.search.application != "pflow":
+        logger.warning(
+            "concurrent_pflow is only applicable for the 'pflow' application; "
+            "setting will be ignored for '%s'.", cfg.search.application,
+        )
+    if cfg.search.max_variants < 2:
+        logger.warning(
+            "max_variants=%d is below the minimum of 2; explore actions require at least 2 variants.",
+            cfg.search.max_variants,
+        )
+    if cfg.search.max_variants > 16:
+        logger.warning(
+            "max_variants=%d is above 16; this may cause excessive prompt size and slow simulation.",
+            cfg.search.max_variants,
+        )

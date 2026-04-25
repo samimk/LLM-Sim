@@ -97,6 +97,7 @@ class SessionManager:
             on_iteration=self._on_iteration_callback,
             on_phase=self._on_phase_callback,
             on_pause_state=self._on_pause_state_callback,
+            on_explore=self._on_explore_callback,
         )
         self._controller = controller
 
@@ -325,6 +326,7 @@ class SessionManager:
             "commands": entry.commands,
             "mode": entry.mode,
             "tracked_metrics": entry.tracked_metrics,
+            "explored_variants": entry.explored_variants if hasattr(entry, "explored_variants") else None,
         }
         self._update_queue.put(update)
 
@@ -341,6 +343,14 @@ class SessionManager:
         self._update_queue.put({
             "type": "pause_state",
             "paused": paused,
+        })
+
+    def _on_explore_callback(self, iteration: int, variant_summaries: list[dict]) -> None:
+        """Called by AgentLoopController after an explore action completes."""
+        self._update_queue.put({
+            "type": "explore_status",
+            "iteration": iteration,
+            "variant_summaries": variant_summaries,
         })
 
     # ------------------------------------------------------------------
@@ -432,6 +442,7 @@ class SessionManager:
             on_iteration=self._on_iteration_callback,
             on_phase=self._on_phase_callback,
             on_pause_state=self._on_pause_state_callback,
+            on_explore=self._on_explore_callback,
         )
         self._controller = controller
 

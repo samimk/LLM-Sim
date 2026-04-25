@@ -283,6 +283,8 @@ def build_config_overrides(
     sopflow_solver: str = "IPOPT",
     sopflow_iscoupling: int = 0,
     benchmark_opflow: bool = False,
+    concurrent_pflow: bool = False,
+    max_variants: int = 8,
 ) -> dict[str, Any]:
     """Build a CLI-style overrides dict from GUI widget values.
 
@@ -363,6 +365,12 @@ def build_config_overrides(
 
     if benchmark_opflow:
         overrides["search.benchmark_opflow"] = True
+
+    if concurrent_pflow:
+        overrides["search.concurrent_pflow"] = True
+
+    if max_variants != 8:
+        overrides["search.max_variants"] = max_variants
 
     return overrides
 

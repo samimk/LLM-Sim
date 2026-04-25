@@ -174,6 +174,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="After PFLOW search, run OPFLOW on the base case and compare results",
     )
     parser.add_argument(
+        "--concurrent-pflow",
+        action="store_true",
+        default=None,
+        help="Enable concurrent explore/select for PFLOW search",
+    )
+    parser.add_argument(
+        "--max-variants",
+        type=int,
+        default=None,
+        help="Max variants per explore action (default: 8, range: 2-16)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -222,6 +234,10 @@ def _cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
         overrides["search.search_mode"] = args.search_mode
     if getattr(args, "benchmark_opflow", None):
         overrides["search.benchmark_opflow"] = True
+    if getattr(args, "concurrent_pflow", None):
+        overrides["search.concurrent_pflow"] = True
+    if getattr(args, "max_variants", None) is not None:
+        overrides["search.max_variants"] = args.max_variants
     if args.verbose is not None:
         overrides["output.verbose"] = args.verbose
     # base_case is set via positional arg (may be None if --resume is used)

@@ -6,6 +6,7 @@ import logging
 import shlex
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -259,6 +260,65 @@ class SimulationExecutor:
             error_message=error_message,
             workdir=run_dir,
         )
+
+    def run_parallel(
+        self,
+        tasks: list[tuple[MATNetwork, str, int, list[str] | None]],
+        max_workers: int = 4,
+    ) -> dict[int, SimulationResult]:
+        """Run multiple simulations concurrently via thread pool.
+
+        Each simulation is an independent subprocess invocation; the GIL
+        is released during I/O wait, so threads provide true concurrency.
+
+        Args:
+            tasks: List of (network, application, iteration, extra_args) tuples.
+                Use distinct ``iteration`` values with variant labels to avoid
+                directory collisions (e.g., pass negative iteration numbers or
+                offset them so each variant gets its own workdir).
+            max_workers: Maximum number of concurrent simulations.
+
+        Returns:
+            Dict mapping task index (0-based) to SimulationResult,
+            preserving the input order.
+        """
+        if not tasks:
+            return {}
+
+        logger.info(
+            "run_parallel: submitting %d simulation(s) with max_workers=%d",
+            len(tasks), max_workers,
+        )
+
+        results: dict[int, SimulationResult] = {}
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_idx: dict = {}
+            for idx, (network, application, iteration, extra_args) in enumerate(tasks):
+                future = pool.submit(
+                    self.run, network, application, iteration, extra_args,
+                )
+                future_to_idx[future] = idx
+
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as exc:
+                    logger.error("run_parallel: task %d raised %s: %s", idx, type(exc).__name__, exc)
+                    results[idx] = SimulationResult(
+                        success=False,
+                        exit_code=-1,
+                        stdout="",
+                        stderr=str(exc),
+                        elapsed_seconds=0.0,
+                        input_file=Path("."),
+                        application="unknown",
+                        error_message=f"Parallel task {idx} failed: {exc}",
+                        workdir=Path("."),
+                    )
+
+        return results
 
     def cleanup_workdir(self, result: SimulationResult) -> None:
         """Remove the working directory for a simulation run.
