@@ -793,6 +793,30 @@ class AgentLoopController:
 
         return "modify", True
 
+    @staticmethod
+    def _current_bus_vlimits(net) -> tuple[float | None, float | None] | None:
+        """Return the uniform (Vmin, Vmax) on the network, or None if not uniform.
+
+        If all buses share the same Vmin and same Vmax, return that pair.
+        Otherwise return None (mixed limits, cannot auto-inject).
+        """
+        if not net.buses:
+            return None
+        vmins = {round(b.Vmin, 6) for b in net.buses}
+        vmaxs = {round(b.Vmax, 6) for b in net.buses}
+        if len(vmins) == 1 and len(vmaxs) == 1:
+            return (vmins.pop(), vmaxs.pop())
+        return None
+
+    @staticmethod
+    def _variant_has_vlimits(raw_cmds: list[dict]) -> bool:
+        """Check whether the variant commands include set_all_bus_vlimits."""
+        for raw in raw_cmds:
+            action = raw.get("action", "").lower()
+            if action in ("set_all_bus_vlimits", "set_bus_vlimits"):
+                return True
+        return False
+
     def _handle_explore(
         self, iteration: int, data: dict
     ) -> tuple[str, bool]:
@@ -838,6 +862,19 @@ class AgentLoopController:
         else:
             base_net = self._current_network
 
+        # Auto-inject set_all_bus_vlimits into variants missing it when
+        # the current network has non-default voltage limits.
+        _vlimits_inject = None
+        if self._config.search.application == "pflow" and base_net is not None:
+            limits = self._current_bus_vlimits(base_net)
+            base_limits = self._current_bus_vlimits(self._base_network)
+            if limits is not None and base_limits is not None and limits != base_limits:
+                _vlimits_inject = limits
+                self._print(
+                    f"[Iter {iteration}] Auto-injecting set_all_bus_vlimits "
+                    f"(Vmin={limits[0]}, Vmax={limits[1]}) into variants missing it"
+                )
+
         # Parse and apply each variant
         variant_results: dict[str, VariantResult] = {}
         sim_tasks: list[tuple[MATNetwork, str, int, list[str] | None]] = []
@@ -851,6 +888,9 @@ class AgentLoopController:
                 label = chr(ord("A") + len(variant_results))
             raw_cmds = raw_v.get("commands", [])
             v_desc = raw_v.get("description", label)
+
+            if _vlimits_inject is not None and not self._variant_has_vlimits(raw_cmds):
+                raw_cmds = [{"action": "set_all_bus_vlimits", "Vmin": _vlimits_inject[0], "Vmax": _vlimits_inject[1]}] + raw_cmds
 
             commands: list = []
             parse_errors: list[str] = []
@@ -985,7 +1025,10 @@ class AgentLoopController:
             for lbl, v in variant_results.items():
                 summary = {"label": lbl, "feasible": False}
                 if v.opflow_result is not None:
-                    summary["feasible"] = v.opflow_result.feasibility_detail == "feasible"
+                    summary["feasible"] = (
+                        v.opflow_result.feasibility_detail == "feasible"
+                        and v.opflow_result.num_violations == 0
+                    )
                     summary["convergence_status"] = v.opflow_result.convergence_status
                     summary["voltage_min"] = v.opflow_result.voltage_min
                     summary["voltage_max"] = v.opflow_result.voltage_max
@@ -1001,6 +1044,43 @@ class AgentLoopController:
                 self._error_feedback += "\n\n" + warning_text
             else:
                 self._error_feedback = warning_text
+
+        active_directive = (
+            self._active_steering_directives[-1]["directive"]
+            if self._active_steering_directives else None
+        )
+
+        variant_labels = sorted(variant_results.keys())
+        variant_info = []
+        for lbl in variant_labels:
+            v = variant_results[lbl]
+            info = {"label": lbl, "description": v.description, "commands": v.raw_commands, "is_pareto": v.is_pareto}
+            if v.opflow_result is not None:
+                info["feasible"] = (
+                    v.opflow_result.feasibility_detail == "feasible"
+                    and v.opflow_result.num_violations == 0
+                )
+                info["voltage_min"] = v.opflow_result.voltage_min
+                info["voltage_max"] = v.opflow_result.voltage_max
+                info["max_line_loading_pct"] = v.opflow_result.max_line_loading_pct
+                info["violations_count"] = v.opflow_result.num_violations
+                if gencost is not None:
+                    try:
+                        info["cost"] = v.opflow_result.compute_generation_cost(gencost)
+                    except Exception:
+                        pass
+            else:
+                info["feasible"] = False
+            variant_info.append(info)
+
+        self._journal.add_explore(
+            iteration=iteration,
+            description=f"[explore] {description}",
+            variant_info=variant_info,
+            pareto_labels=pareto_labels,
+            llm_reasoning=reasoning,
+            steering_directive=active_directive,
+        )
 
         return "explore", True
 
@@ -1057,9 +1137,12 @@ class AgentLoopController:
             if self._config.search.application == "pflow" else None
         )
         for lbl, v in cache.variants.items():
-            entry = {"label": lbl}
+            entry = {"label": lbl, "description": v.description, "commands": v.raw_commands, "is_pareto": v.is_pareto}
             if v.opflow_result is not None:
-                entry["feasible"] = v.opflow_result.feasibility_detail == "feasible"
+                entry["feasible"] = (
+                    v.opflow_result.feasibility_detail == "feasible"
+                    and v.opflow_result.num_violations == 0
+                )
                 if gencost is not None:
                     try:
                         entry["cost"] = v.opflow_result.compute_generation_cost(gencost)

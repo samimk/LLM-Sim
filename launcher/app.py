@@ -651,6 +651,10 @@ def _iteration_icon(entry: dict) -> str:
         return "❌"
     if entry.get("convergence_status") == "COMPLETE":
         return "🏁"
+    if entry.get("convergence_status") == "EXPLORE":
+        return "🔍"
+    if entry.get("convergence_status") == "ANALYSIS":
+        return "🔬"
     if entry.get("feasible"):
         return "✅"
     return "⚠️"
@@ -789,9 +793,12 @@ def render_live_monitor():
                     variant_rows = []
                     for v in explored_variants:
                         label = v.get("label", "?")
+                        desc = v.get("description", "")
                         feasible = "✅" if v.get("feasible") else "❌"
                         cost = f"${v['cost']:,.0f}" if v.get("cost") is not None else "—"
-                        variant_rows.append(f"{label}: {feasible} {cost}")
+                        pareto = " ★" if v.get("is_pareto") else ""
+                        desc_str = f" ({desc})" if desc else ""
+                        variant_rows.append(f"{label}{pareto}: {feasible} {cost}{desc_str}")
                     st.code("\n".join(variant_rows), language=None)
 
         # Current phase indicator

@@ -91,12 +91,21 @@ def compute_pareto_labels(
 
     Returns the list of Pareto-optimal labels. Variants in the dict
     are modified in-place: ``is_pareto`` is set on each.
+
+    A variant is considered feasible only if:
+    - The simulation converged (feasibility_detail == "feasible"), AND
+    - There are zero constraint violations (num_violations == 0).
+
+    This ensures that variants with voltage violations (e.g., Vmin < 0.95
+    when tight limits are enforced via set_all_bus_vlimits) are classified
+    as infeasible even though PFLOW reports convergence.
     """
     candidates: list[ParetoCandidate] = []
     for label, v in variants.items():
         feasible = (
             v.opflow_result is not None
             and v.opflow_result.feasibility_detail == "feasible"
+            and v.opflow_result.num_violations == 0
         )
         metrics = variant_metrics(v, objectives, gencost)
         candidates.append(ParetoCandidate(

@@ -248,6 +248,44 @@ class SearchJournal:
         self._entries.append(entry)
         return entry
 
+    def add_explore(
+        self,
+        iteration: int,
+        description: str,
+        variant_info: list[dict],
+        pareto_labels: list[str] | None = None,
+        llm_reasoning: str = "",
+        steering_directive: str | None = None,
+    ) -> JournalEntry:
+        """Record an 'explore' action in the journal.
+
+        Creates a lightweight entry (no simulation data for the explore itself)
+        with explored_variants metadata so the search history shows what
+        parameter ranges were tested.
+        """
+        entry = JournalEntry(
+            iteration=iteration,
+            description=description,
+            commands=[],
+            objective_value=None,
+            feasible=False,
+            convergence_status="EXPLORE",
+            violations_count=0,
+            voltage_min=0.0,
+            voltage_max=0.0,
+            max_line_loading_pct=0.0,
+            total_gen_mw=0.0,
+            total_load_mw=0.0,
+            llm_reasoning=llm_reasoning,
+            mode="explore",
+            elapsed_seconds=0.0,
+            steering_directive=steering_directive,
+            feasibility_detail="",
+            explored_variants=variant_info,
+        )
+        self._entries.append(entry)
+        return entry
+
     def add_analysis(
         self,
         iteration: int,
@@ -335,7 +373,19 @@ class SearchJournal:
         if e.steering_directive:
             desc_text += f" [Steered: {e.steering_directive[:50]}]"
         desc = desc_text[:35].ljust(35)
-        if e.feasible and e.objective_value is not None:
+        if e.convergence_status == "EXPLORE":
+            desc = desc_text[:35].ljust(35)
+            n_var = len(e.explored_variants) if e.explored_variants else 0
+            pareto = ""
+            if e.explored_variants:
+                pareto_labels = [v["label"] for v in e.explored_variants if v.get("is_pareto")]
+                if pareto_labels:
+                    pareto = f" ★{','.join(pareto_labels)}"
+            return (
+                f"{e.iteration:>4} | {desc} | {'EXPLORE':>14} |  N/A  | "
+                f"{n_var} variants{pareto:<13} |      N/A"
+            )
+        elif e.feasible and e.objective_value is not None:
             cost = f"{e.objective_value:>12,.2f}"
             feas = "Yes"
             vrange = f"{e.voltage_min:.3f} - {e.voltage_max:.3f}"
@@ -442,6 +492,10 @@ class SearchJournal:
                 parts.append(f"Steering directive: {e.steering_directive}")
             if e.tracked_metrics:
                 parts.append(f"Tracked metrics: {json.dumps(e.tracked_metrics, indent=2)}")
+            if e.explored_variants:
+                parts.append(f"Explored variants ({len(e.explored_variants)}):")
+                for v in e.explored_variants:
+                    parts.append(f"  {json.dumps(v)}")
 
         return "\n".join(parts)
 

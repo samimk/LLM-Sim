@@ -196,6 +196,33 @@ class TestComputeParetoLabels:
         # With default generation_cost minimize, B (cost=80) dominates A (cost=100)
         assert "B" in labels
 
+    def test_converged_but_violations_is_infeasible(self):
+        v = self._make_variant("A", feasible=True, cost=100.0)
+        v.opflow_result = _make_opflow_result(
+            feasibility_detail="feasible",
+            converged=True,
+            num_violations=2,
+        )
+        v.opflow_result.compute_generation_cost = MagicMock(return_value=100.0)
+        variants = {"A": v}
+        labels = compute_pareto_labels(variants, [])
+        assert "A" not in labels
+        assert v.is_pareto is False
+
+    def test_mixed_violations_feasibility(self):
+        v_ok = self._make_variant("A", feasible=True, cost=100.0)
+        v_viol = self._make_variant("B", feasible=True, cost=80.0)
+        v_viol.opflow_result = _make_opflow_result(
+            feasibility_detail="feasible",
+            converged=True,
+            num_violations=1,
+        )
+        v_viol.opflow_result.compute_generation_cost = MagicMock(return_value=80.0)
+        variants = {"A": v_ok, "B": v_viol}
+        labels = compute_pareto_labels(variants, [])
+        assert "A" in labels
+        assert "B" not in labels
+
 
 # ---------------------------------------------------------------------------
 # ExploreCache tests
@@ -697,3 +724,151 @@ class TestSystemPromptConcurrentMode:
         )
         assert "EXPLORE" not in prompt
         assert '"explore"' not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Bug fix tests
+# ---------------------------------------------------------------------------
+
+class TestExploreJournalEntry:
+    """Bug fix: explore actions must create a journal entry."""
+
+    def test_add_explore_creates_entry(self):
+        from llm_sim.engine.journal import SearchJournal
+        journal = SearchJournal()
+        entry = journal.add_explore(
+            iteration=3,
+            description="[explore] Voltage sweep",
+            variant_info=[
+                {"label": "A", "description": "Vmin=0.95", "commands": [{"action": "scale_all_loads", "factor": 1.05}], "feasible": True, "is_pareto": True},
+                {"label": "B", "description": "Vmin=0.94", "commands": [{"action": "scale_all_loads", "factor": 1.10}], "feasible": False, "is_pareto": False},
+            ],
+            pareto_labels=["A"],
+            llm_reasoning="Testing voltage limit sensitivity",
+        )
+        assert entry.convergence_status == "EXPLORE"
+        assert entry.mode == "explore"
+        assert entry.explored_variants is not None
+        assert len(entry.explored_variants) == 2
+        assert entry.explored_variants[0]["label"] == "A"
+        assert entry.explored_variants[0]["description"] == "Vmin=0.95"
+        assert entry.explored_variants[0]["is_pareto"] is True
+        assert entry.explored_variants[1]["is_pareto"] is False
+        assert len(journal.entries) == 1
+
+    def test_add_explore_appears_in_format_for_prompt(self):
+        from llm_sim.engine.journal import SearchJournal
+        journal = SearchJournal()
+        journal.add_explore(
+            iteration=2,
+            description="[explore] Load sweep",
+            variant_info=[
+                {"label": "A", "description": "factor=1.05", "commands": [], "feasible": True, "is_pareto": True},
+            ],
+            pareto_labels=["A"],
+        )
+        text = journal.format_for_prompt()
+        assert "EXPLORE" in text
+
+    def test_add_explore_appears_in_format_detailed(self):
+        from llm_sim.engine.journal import SearchJournal
+        journal = SearchJournal()
+        journal.add_explore(
+            iteration=5,
+            description="[explore] Gen dispatch sweep",
+            variant_info=[
+                {"label": "A", "description": "Pg=100", "commands": [{"action": "set_gen_dispatch", "bus": 1, "Pg": 100}], "feasible": True, "is_pareto": True},
+            ],
+            pareto_labels=["A"],
+        )
+        text = journal.format_detailed()
+        assert "EXPLORE" in text
+        assert "Explored variants" in text
+
+
+class TestExploredVariantsDescriptions:
+    """Bug fix: explored_variants must include description, commands, and is_pareto."""
+
+    def test_select_entry_has_variant_descriptions(self):
+        from llm_sim.engine.journal import SearchJournal
+        journal = SearchJournal()
+        opf = _make_opflow_result()
+        entry = journal.add_from_results(
+            iteration=3,
+            description="[select A] test",
+            commands=[{"action": "scale_all_loads", "factor": 1.05}],
+            opflow_result=opf,
+            sim_elapsed=1.0,
+            llm_reasoning="Selected A",
+            mode="accumulative",
+            explored_variants=[
+                {
+                    "label": "A",
+                    "description": "Load factor 1.05",
+                    "commands": [{"action": "scale_all_loads", "factor": 1.05}],
+                    "feasible": True,
+                    "cost": 12000.0,
+                    "is_pareto": True,
+                },
+                {
+                    "label": "B",
+                    "description": "Load factor 1.10",
+                    "commands": [{"action": "scale_all_loads", "factor": 1.10}],
+                    "feasible": False,
+                    "is_pareto": False,
+                },
+            ],
+        )
+        assert entry.explored_variants is not None
+        assert entry.explored_variants[0]["description"] == "Load factor 1.05"
+        assert entry.explored_variants[0]["commands"] == [{"action": "scale_all_loads", "factor": 1.05}]
+        assert entry.explored_variants[0]["is_pareto"] is True
+        assert entry.explored_variants[1]["description"] == "Load factor 1.10"
+
+
+class TestAutoInjectVlimits:
+    """Bug fix: auto-inject set_all_bus_vlimits into variants missing it."""
+
+    def test_current_bus_vlimits_uniform(self):
+        from llm_sim.engine.agent_loop import AgentLoopController
+        net = MagicMock()
+        bus1 = MagicMock()
+        bus1.Vmin = 0.95
+        bus1.Vmax = 1.05
+        bus2 = MagicMock()
+        bus2.Vmin = 0.95
+        bus2.Vmax = 1.05
+        net.buses = [bus1, bus2]
+        result = AgentLoopController._current_bus_vlimits(net)
+        assert result == (0.95, 1.05)
+
+    def test_current_bus_vlimits_mixed(self):
+        from llm_sim.engine.agent_loop import AgentLoopController
+        net = MagicMock()
+        bus1 = MagicMock()
+        bus1.Vmin = 0.95
+        bus1.Vmax = 1.05
+        bus2 = MagicMock()
+        bus2.Vmin = 0.90
+        bus2.Vmax = 1.10
+        net.buses = [bus1, bus2]
+        result = AgentLoopController._current_bus_vlimits(net)
+        assert result is None
+
+    def test_variant_has_vlimits(self):
+        from llm_sim.engine.agent_loop import AgentLoopController
+        cmds = [
+            {"action": "set_all_bus_vlimits", "Vmin": 0.95, "Vmax": 1.05},
+            {"action": "scale_all_loads", "factor": 1.05},
+        ]
+        assert AgentLoopController._variant_has_vlimits(cmds) is True
+
+    def test_variant_no_vlimits(self):
+        from llm_sim.engine.agent_loop import AgentLoopController
+        cmds = [{"action": "scale_all_loads", "factor": 1.05}]
+        assert AgentLoopController._variant_has_vlimits(cmds) is False
+
+    def test_variant_per_bus_vlimits(self):
+        from llm_sim.engine.agent_loop import AgentLoopController
+        cmds = [{"action": "set_bus_vlimits", "bus": 1, "Vmin": 0.95}]
+        assert AgentLoopController._variant_has_vlimits(cmds) is True
