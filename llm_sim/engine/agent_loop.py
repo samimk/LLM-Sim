@@ -20,6 +20,8 @@ from llm_sim.engine.executor import SimulationExecutor, SimulationResult
 from llm_sim.engine.explore import (
     ExploreCache,
     VariantResult,
+    annotate_cost_equivalent_siblings,
+    build_variant_description,
     compute_pareto_labels,
     format_variant_results,
 )
@@ -33,6 +35,7 @@ from llm_sim.engine.objective_parser import (
 from llm_sim.engine.schema_description import command_schema_text
 from llm_sim.parsers import (
     parse_matpower,
+    network_metadata,
     network_summary,
     parse_simulation_result_for_app,
     results_summary_for_app,
@@ -177,6 +180,10 @@ class AgentLoopController:
         self._sopflow_num_scenarios: int = 0
         self._sopflow_scenario_override: Optional[Path] = None
         self._explore_cache: Optional[ExploreCache] = None
+        # Sticky session-level load factor (Task 1)
+        self._session_load_factor: Optional[float] = config.search.load_factor
+        # Benchmark result computed at session start (Task 2)
+        self._benchmark_result: Optional[dict] = None
 
     # ------------------------------------------------------------------
     # Output helper
@@ -300,14 +307,83 @@ class AgentLoopController:
         self._base_network = parse_matpower(base_case)
         self._current_network = self._base_network
         net_summary_text = network_summary(self._base_network)
+        net_metadata_text = network_metadata(self._base_network)
+        self._network_metadata_text = net_metadata_text
+
+        # 1b. Run OPFLOW benchmark at session start (if enabled)
+        benchmark_text: Optional[str] = None
+        if (
+            self._config.search.application == "pflow"
+            and self._config.search.benchmark_opflow
+        ):
+            try:
+                from llm_sim.engine.benchmark import _run_opflow_on_base_case
+                from llm_sim.prompts.system_prompt import format_benchmark_for_prompt
+                self._print("[Session] Running OPFLOW baseline for benchmark reference...")
+                opflow_baseline = _run_opflow_on_base_case(base_case, self._config)
+                if opflow_baseline is not None:
+                    opflow_cost = opflow_baseline.objective_value
+                    pflow_baseline_cost = None
+                    if self._base_network.gencost:
+                        pflow_result_tmp = parse_simulation_result_for_app(
+                            self._executor.run(self._base_network, "pflow", iteration=-2),
+                            "pflow",
+                            bus_limits=_bus_limits_from_network(self._base_network),
+                        )
+                        if pflow_result_tmp is not None:
+                            pflow_baseline_cost = pflow_result_tmp.compute_generation_cost(
+                                self._base_network.gencost
+                            )
+                    gap_pct = None
+                    gap_abs = None
+                    if opflow_cost and pflow_baseline_cost and opflow_cost != 0:
+                        gap_abs = pflow_baseline_cost - opflow_cost
+                        gap_pct = gap_abs / abs(opflow_cost) * 100
+                    from llm_sim.engine.benchmark import _build_dispatch_comparison, DispatchComparison
+                    dispatch_cmp = _build_dispatch_comparison(opflow_baseline, pflow_result_tmp if pflow_result_tmp is not None else None)
+                    bench_dict: dict = {
+                        "opflow_converged": opflow_baseline.converged,
+                        "opflow_objective": opflow_cost,
+                        "pflow_best_computed_cost": pflow_baseline_cost,
+                        "cost_gap_pct": gap_pct,
+                        "cost_gap_abs": gap_abs,
+                        "dispatch_comparison": [
+                            {
+                                "bus": dc.bus,
+                                "fuel": dc.fuel,
+                                "opflow_pg": dc.opflow_pg,
+                                "pflow_pg": dc.pflow_pg,
+                                "delta": dc.delta,
+                                "opflow_pmax": dc.opflow_pmax,
+                            }
+                            for dc in dispatch_cmp
+                        ],
+                    }
+                    self._benchmark_result = bench_dict
+                    self._journal.benchmark_result = bench_dict
+                    benchmark_text = format_benchmark_for_prompt(bench_dict)
+                    self._print(
+                        f"[Session] Benchmark: OPFLOW=${opflow_cost:,.2f}"
+                        if opflow_cost else "[Session] Benchmark: OPFLOW converged"
+                    )
+            except Exception as exc:
+                logger.warning("Session-start benchmark failed: %s", exc)
+
+        # Initialize journal load_factor from config
+        if self._session_load_factor is not None:
+            self._journal.load_factor = self._session_load_factor
 
         # Build system prompt once (static per session)
+        from llm_sim.prompts.system_prompt import format_benchmark_for_prompt as _fmt_bench
         self._system_prompt = build_system_prompt(
             command_schema=command_schema_text(),
             network_summary=net_summary_text,
             application=self._config.search.application,
             search_mode=self._config.search.search_mode,
             concurrent_pflow=self._config.search.concurrent_pflow,
+            network_metadata=net_metadata_text,
+            benchmark_text=benchmark_text,
+            session_load_factor=self._session_load_factor,
         )
 
         self._current_goal = goal
@@ -378,6 +454,7 @@ class AgentLoopController:
                 mode="fresh",
                 num_steps=self._tcopflow_num_steps,
                 num_scenarios=self._sopflow_num_scenarios,
+                gencost=self._base_network.gencost if self._config.search.application == "pflow" else None,
             )
             if self._config.search.application == "pflow":
                 computed_cost = opflow.compute_generation_cost(self._base_network.gencost)
@@ -522,6 +599,7 @@ class AgentLoopController:
             self._latest_results_text,
             self._error_feedback,
             steering_directives=self._active_steering_directives or None,
+            current_iteration=iteration,
         )
         self._error_feedback = None  # consumed
 
@@ -577,6 +655,8 @@ class AgentLoopController:
             return self._handle_complete(iteration, data)
         elif action == "analyze":
             return self._handle_analyze(iteration, data)
+        elif action == "set_load_factor":
+            return self._handle_set_load_factor(iteration, data)
         else:
             self._print(f"[Iter {iteration}] Unknown action: '{action}'")
             valid = "modify, explore, select, complete, analyze"
@@ -611,6 +691,18 @@ class AgentLoopController:
             self._sopflow_scenario_override = None
         else:
             base_net = self._current_network
+
+        # Auto-inject session load factor if set and not already in commands
+        if (
+            self._session_load_factor is not None
+            and self._config.search.application == "pflow"
+            and not any(
+                r.get("action", "").lower() == "scale_all_loads" for r in raw_commands
+            )
+        ):
+            raw_commands = [
+                {"action": "scale_all_loads", "factor": self._session_load_factor}
+            ] + list(raw_commands)
 
         # Parse and apply commands
         commands = []
@@ -782,14 +874,36 @@ class AgentLoopController:
             steering_directive=active_directive,
             num_steps=self._tcopflow_num_steps,
             num_scenarios=self._sopflow_num_scenarios,
+            gencost=modified_net.gencost if self._config.search.application == "pflow" else None,
         )
 
         # Extract tracked metrics for multi-objective tracking
         if opflow is not None:
             metric_names = [o.name for o in self._journal.objective_registry.objectives]
             metrics = extract_all_metrics(opflow, metric_names)
+            # For PFLOW: override generation_cost with the computed value
+            # (extract_all_metrics reads opflow.objective_value, which is 0.0
+            # for PFLOW). We have already populated the entry's objective_value
+            # and tracked_metrics["generation_cost"] correctly in add_from_results;
+            # preserve that value here too.
+            if (
+                self._config.search.application == "pflow"
+                and "generation_cost" in metrics
+                and self._journal.latest is not None
+                and self._journal.latest.tracked_metrics is not None
+                and "generation_cost" in self._journal.latest.tracked_metrics
+            ):
+                metrics["generation_cost"] = self._journal.latest.tracked_metrics["generation_cost"]
             if metrics and self._journal.latest:
-                self._journal.latest.tracked_metrics = metrics
+                # Merge: keep any pre-populated values and add new ones
+                if self._journal.latest.tracked_metrics:
+                    merged = dict(self._journal.latest.tracked_metrics)
+                    merged.update(metrics)
+                    if "generation_cost" in self._journal.latest.tracked_metrics:
+                        merged["generation_cost"] = self._journal.latest.tracked_metrics["generation_cost"]
+                    self._journal.latest.tracked_metrics = merged
+                else:
+                    self._journal.latest.tracked_metrics = metrics
 
         return "modify", True
 
@@ -879,18 +993,36 @@ class AgentLoopController:
         variant_results: dict[str, VariantResult] = {}
         sim_tasks: list[tuple[MATNetwork, str, int, list[str] | None]] = []
         sim_labels: list[str] = []
+        # Maps a variant label to its index in sim_tasks (and therefore in
+        # results_map). Rejected variants are absent from this mapping.
+        sim_idx_by_label: dict[str, int] = {}
         all_errors: list[str] = []
         all_warnings: list[str] = []
+        rejected_labels: list[str] = []
 
         for raw_v in raw_variants:
             label = raw_v.get("label", "")
             if not label:
                 label = chr(ord("A") + len(variant_results))
             raw_cmds = raw_v.get("commands", [])
-            v_desc = raw_v.get("description", label)
+            # LLM-provided description (if any). If absent or just a letter,
+            # we auto-generate a human-readable description after apply_modifications.
+            _llm_desc = raw_v.get("description")
+            v_desc = _llm_desc if _llm_desc and _llm_desc != label else None
 
             if _vlimits_inject is not None and not self._variant_has_vlimits(raw_cmds):
                 raw_cmds = [{"action": "set_all_bus_vlimits", "Vmin": _vlimits_inject[0], "Vmax": _vlimits_inject[1]}] + raw_cmds
+
+            # Auto-inject session load factor if set and not already in variant
+            if (
+                self._session_load_factor is not None
+                and not any(
+                    r.get("action", "").lower() == "scale_all_loads" for r in raw_cmds
+                )
+            ):
+                raw_cmds = [
+                    {"action": "scale_all_loads", "factor": self._session_load_factor}
+                ] + list(raw_cmds)
 
             commands: list = []
             parse_errors: list[str] = []
@@ -904,6 +1036,7 @@ class AgentLoopController:
                 all_errors.extend(parse_errors)
                 continue
 
+            rejected = False
             if commands:
                 modified_net, report = apply_modifications(
                     base_net, commands, application=self._config.search.application,
@@ -915,21 +1048,41 @@ class AgentLoopController:
                 if report.skipped:
                     for cmd, reasons in report.skipped:
                         all_errors.append(f"Variant {label}: Skipped {cmd}: {'; '.join(reasons)}")
+                _skipped_cmds = list(report.skipped)
+                # Auto-generate description from commands if the LLM didn't provide one.
+                if v_desc is None:
+                    v_desc = build_variant_description(commands, _skipped_cmds)
+                # If every command in this variant was a no-op against the
+                # base case, it would simulate to the base result and waste
+                # a slot. Reject pre-execution and surface why.
+                if applied == 0:
+                    rejected = True
+                    rejected_labels.append(label)
+                    v_desc = f"[REJECTED — all commands no-op] {v_desc}"
+                    self._print(
+                        f"[Iter {iteration}] Variant {label}: REJECTED — all "
+                        f"{skipped} command(s) would be no-ops against the base case"
+                    )
             else:
                 modified_net = base_net
+                _skipped_cmds = []
+                if v_desc is None:
+                    v_desc = "(no commands)"
 
-            # Use negative iteration numbers to create distinct workdirs for each variant
-            variant_iter = -(iteration * max_variants + len(sim_tasks))
+            if not rejected:
+                # Use negative iteration numbers to create distinct workdirs for each variant
+                variant_iter = -(iteration * max_variants + len(sim_tasks))
 
-            gencost_for_summary = modified_net.gencost if self._config.search.application == "pflow" else None
+                gencost_for_summary = modified_net.gencost if self._config.search.application == "pflow" else None
 
-            sim_tasks.append((
-                modified_net,
-                self._config.search.application,
-                variant_iter,
-                self._build_extra_args(),
-            ))
-            sim_labels.append(label)
+                sim_idx_by_label[label] = len(sim_tasks)
+                sim_tasks.append((
+                    modified_net,
+                    self._config.search.application,
+                    variant_iter,
+                    self._build_extra_args(),
+                ))
+                sim_labels.append(label)
 
             variant_results[label] = VariantResult(
                 label=label,
@@ -939,13 +1092,21 @@ class AgentLoopController:
                 modified_net=modified_net,
                 sim_result=None,
                 opflow_result=None,
+                skipped_commands=_skipped_cmds,
+                rejected=rejected,
             )
 
         if len(sim_tasks) < 2:
             self._error_feedback = (
                 "Not enough valid variants to explore. At least 2 variants with "
-                "valid commands are required."
+                "at least one effective (non-no-op) command are required."
             )
+            if rejected_labels:
+                self._error_feedback += (
+                    f"\nRejected variants ({len(rejected_labels)}): "
+                    f"{', '.join(rejected_labels)} — every proposed command "
+                    "was a no-op against the base case."
+                )
             if all_errors:
                 self._error_feedback += "\n" + "\n".join(all_errors[:5])
             return "error", True
@@ -962,9 +1123,15 @@ class AgentLoopController:
             sim_tasks, max_workers=min(self._config.search.max_variants, len(sim_tasks)),
         )
 
-        # Parse results
-        for idx, (label, v) in enumerate(variant_results.items()):
-            sim_result = results_map.get(idx)
+        # Parse results — only for variants that were actually simulated
+        # (rejected variants have no sim_idx entry and stay with empty results).
+        for label, v in variant_results.items():
+            if v.rejected:
+                continue
+            sim_idx = sim_idx_by_label.get(label)
+            if sim_idx is None:
+                continue
+            sim_result = results_map.get(sim_idx)
             if sim_result is None:
                 continue
             v.sim_result = sim_result
@@ -992,6 +1159,34 @@ class AgentLoopController:
         pareto_labels = compute_pareto_labels(
             variant_results, self._journal.objective_registry.objectives, gencost,
         )
+
+        # Flag identical-cost siblings and collect batch-level warning
+        sibling_warning = annotate_cost_equivalent_siblings(variant_results, gencost)
+        if sibling_warning:
+            if self._error_feedback:
+                self._error_feedback += "\n\n" + sibling_warning
+            else:
+                self._error_feedback = sibling_warning
+
+        # Update session-best with any feasible variant cheaper than the current best
+        if gencost is not None:
+            for lbl, v in variant_results.items():
+                if v.rejected or v.opflow_result is None:
+                    continue
+                if not (v.opflow_result.feasibility_detail == "feasible"
+                        and v.opflow_result.num_violations == 0):
+                    continue
+                try:
+                    cost = v.opflow_result.compute_generation_cost(gencost)
+                except Exception:
+                    continue
+                if cost > 0:
+                    self._journal.update_session_best(
+                        label=lbl,
+                        iteration=iteration,
+                        cost=cost,
+                        commands=v.raw_commands,
+                    )
 
         # Build results text
         self._latest_results_text = format_variant_results(
@@ -1055,6 +1250,15 @@ class AgentLoopController:
         for lbl in variant_labels:
             v = variant_results[lbl]
             info = {"label": lbl, "description": v.description, "commands": v.raw_commands, "is_pareto": v.is_pareto}
+            if v.rejected:
+                info["rejected"] = True
+            if v.skipped_commands:
+                skipped_summaries = []
+                for cmd, reasons in v.skipped_commands:
+                    cmd_name = type(cmd).__name__
+                    reason_str = "; ".join(reasons)
+                    skipped_summaries.append(f"{cmd_name}: {reason_str}")
+                info["skipped"] = skipped_summaries
             if v.opflow_result is not None:
                 info["feasible"] = (
                     v.opflow_result.feasibility_detail == "feasible"
@@ -1110,6 +1314,16 @@ class AgentLoopController:
             return "error", True
 
         selected = cache.variants[choice]
+        if selected.rejected:
+            self._print(f"[Iter {iteration}] Cannot select rejected variant '{choice}'")
+            available = sorted(
+                lbl for lbl, v in cache.variants.items() if not v.rejected
+            )
+            self._error_feedback = (
+                f"Variant '{choice}' was rejected (all commands were no-ops) and "
+                f"cannot be selected. Selectable variants: {', '.join(available) or 'none'}."
+            )
+            return "error", True
         self._print(f'[Iter {iteration}] Selected variant {choice} — "{selected.description}"')
 
         # Update current state
@@ -1138,6 +1352,15 @@ class AgentLoopController:
         )
         for lbl, v in cache.variants.items():
             entry = {"label": lbl, "description": v.description, "commands": v.raw_commands, "is_pareto": v.is_pareto}
+            if v.rejected:
+                entry["rejected"] = True
+            if v.skipped_commands:
+                skipped_summaries = []
+                for cmd, reasons in v.skipped_commands:
+                    cmd_name = type(cmd).__name__
+                    reason_str = "; ".join(reasons)
+                    skipped_summaries.append(f"{cmd_name}: {reason_str}")
+                entry["skipped"] = skipped_summaries
             if v.opflow_result is not None:
                 entry["feasible"] = (
                     v.opflow_result.feasibility_detail == "feasible"
@@ -1169,14 +1392,32 @@ class AgentLoopController:
             num_steps=self._tcopflow_num_steps,
             num_scenarios=self._sopflow_num_scenarios,
             explored_variants=explored_variants,
+            gencost=selected.modified_net.gencost if self._config.search.application == "pflow" else None,
         )
 
         # Extract tracked metrics for multi-objective tracking
         if selected.opflow_result is not None and self._journal.latest:
             metric_names = [o.name for o in self._journal.objective_registry.objectives]
             metrics = extract_all_metrics(selected.opflow_result, metric_names)
+            # For PFLOW: preserve the computed cost we populated above —
+            # extract_all_metrics would otherwise overwrite it with the
+            # raw opflow.objective_value (0.0 for PFLOW).
+            if (
+                self._config.search.application == "pflow"
+                and "generation_cost" in metrics
+                and self._journal.latest.tracked_metrics is not None
+                and "generation_cost" in self._journal.latest.tracked_metrics
+            ):
+                metrics["generation_cost"] = self._journal.latest.tracked_metrics["generation_cost"]
             if metrics:
-                self._journal.latest.tracked_metrics = metrics
+                if self._journal.latest.tracked_metrics:
+                    merged = dict(self._journal.latest.tracked_metrics)
+                    merged.update(metrics)
+                    if "generation_cost" in self._journal.latest.tracked_metrics:
+                        merged["generation_cost"] = self._journal.latest.tracked_metrics["generation_cost"]
+                    self._journal.latest.tracked_metrics = merged
+                else:
+                    self._journal.latest.tracked_metrics = metrics
 
         # Clear explore cache
         self._explore_cache = None
@@ -1222,6 +1463,47 @@ class AgentLoopController:
         )
 
         return "analyze", True
+
+    def _handle_set_load_factor(
+        self, iteration: int, data: dict
+    ) -> tuple[str, bool]:
+        """Handle a 'set_load_factor' action — update the session-level load scaling factor."""
+        new_factor = data.get("factor")
+        if not isinstance(new_factor, (int, float)) or new_factor <= 0:
+            self._error_feedback = (
+                f"Invalid factor for set_load_factor: {new_factor!r}. "
+                "Must be a positive number (e.g., 1.23)."
+            )
+            return "error", True
+
+        old_factor = self._session_load_factor
+        self._session_load_factor = float(new_factor)
+        self._journal.load_factor = self._session_load_factor
+        self._print(
+            f"[Iter {iteration}] LLM action: set_load_factor — "
+            f"{old_factor} → {self._session_load_factor}"
+        )
+        # Rebuild system prompt to reflect the new load factor note
+        from llm_sim.prompts.system_prompt import format_benchmark_for_prompt as _fmt_bench
+        net_summary_text = network_summary(self._base_network)
+        net_metadata_text = self._network_metadata_text
+        benchmark_text = _fmt_bench(self._benchmark_result) if self._benchmark_result else None
+        self._system_prompt = build_system_prompt(
+            command_schema=command_schema_text(),
+            network_summary=net_summary_text,
+            application=self._config.search.application,
+            search_mode=self._config.search.search_mode,
+            concurrent_pflow=self._config.search.concurrent_pflow,
+            network_metadata=net_metadata_text,
+            benchmark_text=benchmark_text,
+            session_load_factor=self._session_load_factor,
+        )
+        self._error_feedback = (
+            f"Load factor updated to {self._session_load_factor}×. "
+            "All subsequent runs will automatically apply this scaling. "
+            "Use 'explore' or 'modify' to continue the search."
+        )
+        return "set_load_factor", True
 
     def _run_analysis_query(self, query: str) -> str:
         """Execute an analysis query against the latest OPFLOW results.
@@ -1385,13 +1667,26 @@ class AgentLoopController:
             return "\n".join(lines)
 
         # ── Generator summary ────────────────────────────────────────────
-        if "generator" in q and "cost" not in q:
+        if "generator" in q:
             lines = ["Generators:"]
-            for g in sorted(opf.generators, key=lambda g: -g.Pg):
+            gencost_list = None
+            ref_bus_ids = set()
+            net_for_info = getattr(self, "_current_network", None) or getattr(self, "_base_network", None)
+            if net_for_info is not None and hasattr(net_for_info, "gencost"):
+                gencost_list = net_for_info.gencost
+                ref_bus_ids = {b.bus_i for b in net_for_info.buses if b.type == 3}
+            show_cost = "cost" in q or "coeff" in q or "detail" in q or "dispatch" in q
+            for i, g in enumerate(sorted(opf.generators, key=lambda g: -g.Pg)):
                 status = "ON" if g.status == 1 else "OFF"
+                bus_type = " [SLACK]" if g.bus in ref_bus_ids else ""
+                cost_str = ""
+                if show_cost and gencost_list is not None and i < len(gencost_list):
+                    gc = gencost_list[i]
+                    if hasattr(gc, "coeffs") and gc.coeffs:
+                        cost_str = f" cost_coeffs={gc.coeffs}"
                 lines.append(
                     f"  Bus {g.bus}: {status} Pg={g.Pg:.2f} MW "
-                    f"[{g.Pmin:.0f}-{g.Pmax:.0f}] fuel={g.fuel}"
+                    f"[{g.Pmin:.0f}-{g.Pmax:.0f}] fuel={g.fuel}{bus_type}{cost_str}"
                 )
             return "\n".join(lines)
 
@@ -1643,6 +1938,7 @@ class AgentLoopController:
         latest_results_text: Optional[str],
         error_feedback: Optional[str] = None,
         steering_directives: list[dict] | None = None,
+        current_iteration: Optional[int] = None,
     ) -> tuple[str, str]:
         """Assemble the system prompt and user prompt for the LLM."""
         journal_text = (
@@ -1673,6 +1969,10 @@ class AgentLoopController:
             steering_directives=steering_directives,
             multi_objective_text=multi_obj_text,
             explore_text=explore_text,
+            session_best=self._journal.session_best,
+            current_iteration=current_iteration,
+            max_iterations=self._config.search.max_iterations,
+            benchmark_result=self._benchmark_result,
         )
         return self._system_prompt, user_prompt
 
@@ -1943,12 +2243,20 @@ class AgentLoopController:
 
         # Rebuild system prompt
         net_summary_text = network_summary(self._base_network)
+        net_metadata_text = network_metadata(self._base_network)
+        self._network_metadata_text = net_metadata_text
+        # Restore load_factor from journal if saved
+        if self._journal.load_factor is not None:
+            self._session_load_factor = self._journal.load_factor
         self._system_prompt = build_system_prompt(
             command_schema=command_schema_text(),
             network_summary=net_summary_text,
             application=self._config.search.application,
             search_mode=self._config.search.search_mode,
             concurrent_pflow=self._config.search.concurrent_pflow,
+            network_metadata=net_metadata_text,
+            benchmark_text=None,  # benchmark only shown in fresh sessions
+            session_load_factor=self._session_load_factor,
         )
 
         self._latest_results_text = None

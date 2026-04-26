@@ -151,6 +151,36 @@ class SearchJournal:
         self._entries: list[JournalEntry] = []
         self.objective_registry = ObjectiveRegistry()
         self.benchmark_result: Optional[dict] = None
+        # session_best: lowest-cost feasible variant ever found across all
+        # explore batches, including non-selected variants.
+        self.session_best: Optional[dict] = None
+        # load_factor: session-level load scaling factor (updated by set_load_factor action).
+        self.load_factor: Optional[float] = None
+
+    def update_session_best(
+        self,
+        label: str,
+        iteration: int,
+        cost: float,
+        commands: list[dict],
+    ) -> None:
+        """Update the session-best record if cost is lower than the current best.
+
+        Args:
+            label: Variant label (e.g. "A").
+            iteration: Explore-iteration number that produced this variant.
+            cost: Computed generation cost (must be > 0 to be recorded).
+            commands: Raw command list for this variant.
+        """
+        if cost <= 0:
+            return
+        if self.session_best is None or cost < self.session_best["cost"]:
+            self.session_best = {
+                "cost": cost,
+                "iteration": iteration,
+                "variant_label": label,
+                "commands": commands,
+            }
 
     def add_entry(self, entry: JournalEntry) -> None:
         """Append an entry to the journal."""
@@ -169,17 +199,31 @@ class SearchJournal:
         num_steps: int = 0,
         num_scenarios: int = 0,
         explored_variants: Optional[list[dict]] = None,
+        gencost: Optional[list] = None,
     ) -> JournalEntry:
         """Create and append a journal entry from OPFLOW results.
 
         If opflow_result is None (simulation failed), fills in defaults
         indicating failure. Returns the created entry.
+
+        For PFLOW (where the solver does not produce an objective value),
+        pass the network's gencost data: the entry's objective_value and
+        tracked_metrics["generation_cost"] will be populated from the
+        computed Σ(c2·Pg² + c1·Pg + c0) across online generators.
         """
         if opflow_result is not None:
             # Determine feasible flag: use feasibility_detail if available,
-            # otherwise fall back to converged + no power balance violation
+            # otherwise fall back to converged + no power balance violation.
+            # IMPORTANT: also require num_violations == 0 — thermal violations
+            # (line overloads) set violations_count > 0 but do NOT change
+            # feasibility_detail from "feasible". Without this guard, states
+            # with active thermal violations are incorrectly classified as
+            # feasible and accepted into session_best.
             if opflow_result.feasibility_detail:
-                feasible = opflow_result.feasibility_detail == "feasible"
+                feasible = (
+                    opflow_result.feasibility_detail == "feasible"
+                    and opflow_result.num_violations == 0
+                )
             else:
                 has_power_balance_violation = (
                     opflow_result.losses_mw < 0 and opflow_result.total_load_mw > 0
@@ -198,11 +242,33 @@ class SearchJournal:
                     feasibility_detail = "infeasible"
                 else:
                     feasibility_detail = "infeasible"
+
+            # Compute the entry's objective_value. PFLOW has no native
+            # objective: when gencost is supplied, derive cost from the
+            # dispatch instead of accepting the placeholder 0.0. For other
+            # applications, pass through opflow_result.objective_value.
+            if gencost is not None:
+                try:
+                    computed_cost = opflow_result.compute_generation_cost(gencost)
+                except Exception:
+                    computed_cost = None
+                # 0.0 from compute_generation_cost means "unable to compute"
+                # (no gencost data, or all generators offline). Treat as None
+                # rather than the misleading sentinel.
+                objective_value = computed_cost if computed_cost else None
+            else:
+                objective_value = opflow_result.objective_value
+
+            # Tracked metrics: ensure generation_cost is populated for PFLOW
+            tracked_metrics: Optional[dict[str, float]] = None
+            if gencost is not None and objective_value is not None:
+                tracked_metrics = {"generation_cost": objective_value}
+
             entry = JournalEntry(
                 iteration=iteration,
                 description=description,
                 commands=commands,
-                objective_value=opflow_result.objective_value,
+                objective_value=objective_value,
                 feasible=feasible,
                 convergence_status=opflow_result.convergence_status,
                 violations_count=opflow_result.num_violations,
@@ -220,6 +286,7 @@ class SearchJournal:
                 num_steps=num_steps,
                 num_scenarios=num_scenarios,
                 explored_variants=explored_variants,
+                tracked_metrics=tracked_metrics,
             )
         else:
             entry = JournalEntry(
@@ -584,6 +651,10 @@ class SearchJournal:
         }
         if self.benchmark_result is not None:
             data["benchmark_result"] = self.benchmark_result
+        if self.session_best is not None:
+            data["session_best"] = self.session_best
+        if self.load_factor is not None:
+            data["load_factor"] = self.load_factor
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         logger.info("Journal exported to %s (%d entries)", path, len(self._entries))
 

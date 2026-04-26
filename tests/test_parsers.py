@@ -202,3 +202,116 @@ class TestEdgeCases:
         assert len(net.buses) == 1
         assert len(net.generators) == 0
         assert len(net.branches) == 0
+
+
+# ===========================================================================
+# Network metadata (Task 3) — static facts injected into the system prompt
+# ===========================================================================
+
+from llm_sim.parsers import network_metadata
+
+
+@pytest.mark.skipif(not _has_test_file, reason="case_ACTIVSg200.m not in data/")
+class TestNetworkMetadataACTIVSg200:
+
+    @pytest.fixture(scope="class")
+    def md(self) -> str:
+        return network_metadata(parse_matpower(ACTIVSG200))
+
+    def test_lists_slack_bus_189(self, md: str):
+        assert "Slack" in md
+        assert "189" in md.split("Note", 1)[0]  # 189 must appear before any Note
+
+    def test_warns_about_slack_dispatch(self, md: str):
+        assert "set_gen_dispatch on the slack bus has no effect" in md
+
+    def test_lists_must_run_generators(self, md: str):
+        # ACTIVSg200 known must-run generators (Pmin == Pmax)
+        for bus in (65, 104, 105, 114, 115, 147):
+            assert str(bus) in md
+        assert "Must-run" in md
+
+    def test_under_25_lines(self, md: str):
+        # Section should stay compact for typical 200-bus networks.
+        assert md.count("\n") < 30
+
+
+class TestNetworkMetadataUniformCost:
+    """When all online generators share the same (c2, c1, c0), emit a warning."""
+
+    def _net(self, gencost_tuples, *, slack_bus=1, n_buses=2):
+        buses = [
+            Bus(
+                bus_i=i + 1,
+                type=3 if (i + 1) == slack_bus else 1,
+                Pd=100.0, Qd=20.0, Gs=0.0, Bs=0.0, area=1, Vm=1.0, Va=0.0,
+                baseKV=115.0, zone=1, Vmax=1.1, Vmin=0.9,
+            )
+            for i in range(n_buses)
+        ]
+        gens = [
+            Generator(
+                bus=i + 1, Pg=50.0, Qg=10.0, Qmax=100.0, Qmin=-100.0, Vg=1.0,
+                mBase=100.0, status=1, Pmax=200.0, Pmin=10.0,
+            )
+            for i in range(len(gencost_tuples))
+        ]
+        gc = [
+            GenCost(model=2, startup=0.0, shutdown=0.0, ncost=3, coeffs=list(t))
+            for t in gencost_tuples
+        ]
+        return MATNetwork(
+            casename="t", version="2", baseMVA=100.0,
+            buses=buses, generators=gens, branches=[], gencost=gc,
+            header_comments="",
+        )
+
+    def test_uniform_cost_emits_warning(self):
+        same = (0.002, 19.0, 236.12)
+        net = self._net([same, same, same], n_buses=3)
+        md = network_metadata(net)
+        assert "WARNING" in md
+        assert "identical quadratic cost" in md
+        assert "236.12" in md
+
+    def test_diverse_cost_no_warning(self):
+        net = self._net([
+            (0.01, 5.0, 100.0),
+            (0.02, 7.0, 200.0),
+            (0.03, 8.0, 150.0),
+        ], n_buses=3)
+        md = network_metadata(net)
+        assert "WARNING" not in md
+        assert "Generator cost curves" in md
+
+    def test_offline_generators_listed(self):
+        net = self._net([(0.01, 5.0, 100.0), (0.02, 7.0, 200.0)], n_buses=2)
+        # Knock the second generator offline
+        net.generators[1].status = 0
+        md = network_metadata(net)
+        assert "Offline" in md
+        # Bus 2 should appear in the offline section
+        offline_block = md.split("Offline")[1]
+        assert "2" in offline_block
+
+    def test_no_priced_generators(self):
+        """If gencost has all zero coefficients, there are no priced generators."""
+        net = self._net([(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)], n_buses=2)
+        md = network_metadata(net)
+        assert "no priced generators" in md
+        assert "WARNING" not in md
+
+
+class TestNetworkMetadataCase9Mod:
+    """case9mod has 3 distinct cost tuples → no uniform-cost warning."""
+
+    @pytest.fixture(scope="class")
+    def md(self) -> str:
+        path = DATA_DIR / "case9mod.m"
+        if not path.exists():
+            pytest.skip("case9mod.m not in data/")
+        return network_metadata(parse_matpower(path))
+
+    def test_no_uniform_cost_warning(self, md: str):
+        assert "WARNING" not in md
+        assert "identical quadratic cost" not in md

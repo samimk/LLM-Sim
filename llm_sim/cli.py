@@ -186,6 +186,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max variants per explore action (default: 8, range: 2-16)",
     )
     parser.add_argument(
+        "--load-factor",
+        dest="load_factor",
+        type=float,
+        default=None,
+        help="Session-level load scaling factor for PFLOW (e.g., 1.23). Auto-injected into every run.",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -238,6 +245,8 @@ def _cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
         overrides["search.concurrent_pflow"] = True
     if getattr(args, "max_variants", None) is not None:
         overrides["search.max_variants"] = args.max_variants
+    if getattr(args, "load_factor", None) is not None:
+        overrides["search.load_factor"] = args.load_factor
     if args.verbose is not None:
         overrides["output.verbose"] = args.verbose
     # base_case is set via positional arg (may be None if --resume is used)

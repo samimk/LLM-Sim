@@ -3,12 +3,99 @@
 from __future__ import annotations
 
 
+def format_benchmark_for_prompt(benchmark_result: dict | None) -> str:
+    """Format a BenchmarkResult dict into a compact prompt section (<25 lines).
+
+    Args:
+        benchmark_result: Dict from BenchmarkResult (serialized via _benchmark_to_dict),
+            or None.
+
+    Returns:
+        Formatted benchmark string for injection into the system prompt.
+    """
+    if benchmark_result is None or not benchmark_result.get("opflow_converged"):
+        return "Benchmark unavailable."
+
+    lines = []
+    opflow_cost = benchmark_result.get("opflow_objective")
+    pflow_cost = benchmark_result.get("pflow_best_computed_cost")
+    gap_pct = benchmark_result.get("cost_gap_pct")
+    gap_abs = benchmark_result.get("cost_gap_abs")
+
+    if opflow_cost is not None:
+        lines.append(f"OPFLOW optimal cost:    ${opflow_cost:,.2f}")
+    if pflow_cost is not None:
+        lines.append(f"PFLOW baseline cost:    ${pflow_cost:,.2f}")
+    if gap_pct is not None and gap_abs is not None:
+        sign = "+" if gap_abs >= 0 else ""
+        lines.append(f"Cost gap:               {sign}{gap_pct:.2f}%  ({sign}${gap_abs:,.2f})")
+
+    loadability = benchmark_result.get("loadability")
+    if loadability:
+        opflow_lf = loadability.get("opflow_max_factor")
+        pflow_lf = loadability.get("pflow_max_factor")
+        lf_gap = loadability.get("gap_pct")
+        if opflow_lf is not None:
+            lines.append(f"OPFLOW max load factor: {opflow_lf:.4f}×")
+        if pflow_lf is not None:
+            lines.append(f"PFLOW max load factor:  {pflow_lf:.4f}×")
+        if lf_gap is not None:
+            lines.append(f"Loadability gap:        {lf_gap:+.1f}%")
+
+    dispatch = benchmark_result.get("dispatch_comparison", [])
+    if dispatch:
+        top5 = sorted(dispatch, key=lambda d: abs(d.get("delta", 0)), reverse=True)[:5]
+        max_delta = abs(top5[0].get("delta", 0)) if top5 else 0
+        if max_delta < 0.01:
+            lines.append("PFLOW and OPFLOW dispatch are identical.")
+        else:
+            lines.append("Top dispatch deviations (|delta| desc):")
+            lines.append(f"  {'Bus':<6} {'Fuel':<8} {'OPFLOW MW':>10} {'PFLOW MW':>10} {'Delta MW':>10}")
+            for dc in top5:
+                lines.append(
+                    f"  {dc['bus']:<6} {dc.get('fuel', '?'):<8} "
+                    f"{dc.get('opflow_pg', 0):>10.1f} {dc.get('pflow_pg', 0):>10.1f} "
+                    f"{dc.get('delta', 0):>+10.1f}"
+                )
+
+    # Contextual notes
+    notes = []
+    if gap_pct is not None and abs(gap_pct) < 0.1:
+        notes.append(
+            "Cost gap is negligible (< 0.1%). Cost reduction by redispatch is not "
+            "meaningful for this network at this load level."
+        )
+    if loadability and loadability.get("gap_pct") is not None and loadability["gap_pct"] < -5:
+        lf_gap_val = loadability["gap_pct"]
+        notes.append(
+            f"PFLOW loadability is significantly below OPFLOW ({lf_gap_val:.1f}%). "
+            "Improving loadability requires generator commitment or voltage setpoint "
+            "changes, not simple redispatch."
+        )
+    if dispatch:
+        top1_delta = top5[0].get("delta", 0) if top5 else 0
+        if abs(top1_delta) > 100:
+            top1_bus = top5[0].get("bus", "?") if top5 else "?"
+            notes.append(
+                f"Generator at bus {top1_bus} is over-dispatched by "
+                f"{abs(top1_delta):.0f} MW versus OPFLOW optimum. "
+                "Consider redistributing this generation."
+            )
+    for note in notes:
+        lines.append(f"Note: {note}")
+
+    return "\n".join(lines)
+
+
 def build_system_prompt(
     command_schema: str,
     network_summary: str,
     application: str = "opflow",
     search_mode: str = "standard",
     concurrent_pflow: bool = False,
+    network_metadata: str | None = None,
+    benchmark_text: str | None = None,
+    session_load_factor: float | None = None,
 ) -> str:
     """Build the system prompt for the LLM agent.
 
@@ -18,13 +105,27 @@ def build_system_prompt(
         application: ExaGO application name.
         search_mode: "standard" or "stress_test".
         concurrent_pflow: Enable explore/select actions for PFLOW.
+        network_metadata: Optional output of network_metadata() with the
+            static structural facts for this network (slack bus, must-run
+            generators, cost-curve diversity). Inserted as Section G when
+            provided.
+        benchmark_text: Optional output of format_benchmark_for_prompt().
+            Inserted as Section H (after network metadata) when provided.
+        session_load_factor: When set, adds a note to the PFLOW section
+            telling the LLM the load factor is auto-injected and it should
+            not include scale_all_loads in its commands.
 
     Returns:
         Complete system prompt string.
     """
     if search_mode == "stress_test":
-        return _build_stress_test_prompt(command_schema, network_summary, application)
-    return _build_standard_prompt(command_schema, network_summary, application, concurrent_pflow)
+        return _build_stress_test_prompt(
+            command_schema, network_summary, application, network_metadata,
+        )
+    return _build_standard_prompt(
+        command_schema, network_summary, application, concurrent_pflow,
+        network_metadata, benchmark_text, session_load_factor,
+    )
 
 
 _DC_OPF_SECTION = (
@@ -341,6 +442,49 @@ _PFLOW_SEARCH_CONCURRENT = (
     "single-point changes when you are certain of the outcome."
 )
 
+_PFLOW_SEARCH_STRATEGY_GUIDANCE = (
+    "\n\n=== Search Strategy Guidance ===\n\n"
+    "**When to use `explore` (parallel branching):**\n"
+    "Use `explore` when you want to test multiple independent hypotheses simultaneously. "
+    "Each variant should represent a structurally different strategy, not just a parameter "
+    "sweep of the same idea. `explore` is most valuable when you are uncertain which "
+    "direction to take.\n\n"
+    "**When to use `fresh` (single-step):**\n"
+    "Use `fresh` when the direction is clear and you just need to take the next step — "
+    "for example, during a binary search for the load feasibility boundary where each "
+    "step's outcome determines the next.\n\n"
+    "**Budget allocation heuristic:**\n"
+    "Spend the first ~20% of your budget establishing a baseline and benchmark reference "
+    "(if not already done), the middle ~60% on parallel explore iterations testing diverse "
+    "strategies, and the final ~20% on refining the best direction found and confirming "
+    "convergence.\n\n"
+    "**Phase transitions:**\n"
+    "If you have run 3+ consecutive explores and the session-best cost has not improved, "
+    "consider: (a) that the search space has been exhausted for this network configuration, "
+    "or (b) that a fundamentally different strategy is needed. Do not keep exploring the "
+    "same direction with minor variations.\n\n"
+    "**Analyze calls are expensive:**\n"
+    "Each `analyze` call consumes one iteration from your budget. Reserve it for genuinely "
+    "ambiguous situations. The Network Metadata section already contains the static facts "
+    "(slack bus, cost coefficients, generator headroom) — do not use `analyze` to retrieve "
+    "information already available there."
+)
+
+_PFLOW_VARIANT_READING_GUIDANCE = (
+    "\n\n=== Reading Variant Results ===\n\n"
+    "- If two variants return identical cost despite having different commands, "
+    "the extra commands in the more complex variant had no effect. The most "
+    "likely cause is a skipped command (check the description for [SKIP] and "
+    "the skipped-command note). Do not repeat those commands in the next explore.\n"
+    "- If your batch's cheapest variant is more expensive than the "
+    "\"Session best\" shown above, your current search direction is regressing. "
+    "Consider returning to a command set closer to the session-best commands, "
+    "or explore a fundamentally different direction.\n"
+    "- The \"Session best\" line shows the best cost ever found, including from "
+    "non-selected variants. Use it as your primary cost reference, not the costs "
+    "shown for prior selected iterations in the Search Journal."
+)
+
 _PFLOW_SECTION = _PFLOW_SECTION_CORE + _PFLOW_SEARCH_SEQUENTIAL
 
 _EXPLORE_PFLOW_SECTION = (
@@ -370,6 +514,11 @@ _EXPLORE_PFLOW_SECTION = (
     "- Dispatch sweep: test different Pg values at generators simultaneously\n"
     "- Load scaling sweep: test different scale_all_loads factors simultaneously\n"
     "- Combined variations: each variant is an independent set of modifications\n\n"
+    "**CRITICAL: Every variant MUST include all commands that are required by the goal.** "
+    "For example, if the goal says 'scale loads to 1.23', every variant must include "
+    "scale_all_loads(factor=1.23). If the goal says 'enforce voltage limits 0.95-1.05', "
+    "every variant must include set_all_bus_vlimits(Vmin=0.95, Vmax=1.05). "
+    "Omitting these fixed commands in some variants makes the results incomparable.\n\n"
     "Example: For a feasibility boundary search, instead of testing one factor per "
     "iteration with 'modify', propose 5 factors spanning the search range. The system "
     "runs all 5 in parallel, identifies which are feasible, and you can then 'select' "
@@ -388,7 +537,11 @@ _EXPLORE_PFLOW_SECTION_NO_CONCURRENT = (
     "concurrent PFLOW (--concurrent-pflow) to run multiple simulations in parallel."
 )
 
-def _app_section(application: str, concurrent_pflow: bool = False) -> str:
+def _app_section(
+    application: str,
+    concurrent_pflow: bool = False,
+    session_load_factor: float | None = None,
+) -> str:
     """Return the application-specific prompt section for the given app."""
     if application == "dcopflow":
         return _DC_OPF_SECTION
@@ -399,10 +552,35 @@ def _app_section(application: str, concurrent_pflow: bool = False) -> str:
     if application == "sopflow":
         return _AC_OPF_VOLTAGE_SECTION + "\n\n" + _SOPFLOW_SECTION
     if application == "pflow":
+        load_factor_note = ""
+        if session_load_factor is not None:
+            load_factor_note = (
+                f"\n\n=== Session Load Factor ===\n\n"
+                f"The session load factor is **{session_load_factor}×** and is applied "
+                f"automatically to every run. Do not include `scale_all_loads` in your "
+                f"commands — it has already been applied. If you want to explore a "
+                f"different load level, use the `set_load_factor` action:\n"
+                f'{{"action": "set_load_factor", "factor": 1.35}}\n'
+                f"This updates the session-level factor for all subsequent iterations."
+            )
         if concurrent_pflow:
-            result = _PFLOW_SECTION_CORE + _PFLOW_SEARCH_CONCURRENT + _EXPLORE_PFLOW_SECTION
+            result = (
+                _PFLOW_SECTION_CORE
+                + load_factor_note
+                + _PFLOW_SEARCH_CONCURRENT
+                + _EXPLORE_PFLOW_SECTION
+                + _PFLOW_SEARCH_STRATEGY_GUIDANCE
+                + _PFLOW_VARIANT_READING_GUIDANCE
+            )
         else:
-            result = _PFLOW_SECTION_CORE + _PFLOW_SEARCH_SEQUENTIAL + _EXPLORE_PFLOW_SECTION_NO_CONCURRENT
+            result = (
+                _PFLOW_SECTION_CORE
+                + load_factor_note
+                + _PFLOW_SEARCH_SEQUENTIAL
+                + _EXPLORE_PFLOW_SECTION_NO_CONCURRENT
+                + _PFLOW_SEARCH_STRATEGY_GUIDANCE
+                + _PFLOW_VARIANT_READING_GUIDANCE
+            )
         return result
     return _AC_OPF_VOLTAGE_SECTION
 
@@ -422,6 +600,9 @@ def _build_standard_prompt(
     network_summary: str,
     application: str,
     concurrent_pflow: bool = False,
+    network_metadata: str | None = None,
+    benchmark_text: str | None = None,
+    session_load_factor: float | None = None,
 ) -> str:
     if concurrent_pflow and application == "pflow":
         _action_header = "You MUST respond with a single JSON object. Choose one of five actions:"
@@ -502,6 +683,14 @@ def _build_standard_prompt(
 }}
 """
 
+    metadata_section = ""
+    if network_metadata:
+        metadata_section = f"\n=== Section G: Network Metadata ===\n\n{network_metadata}\n"
+
+    benchmark_section = ""
+    if benchmark_text:
+        benchmark_section = f"\n=== Section H: Benchmark Reference (OPFLOW vs PFLOW) ===\n\n{benchmark_text}\n"
+
     return f"""\
 You are a power systems analysis agent. You iteratively modify a power grid \
 network and run {application.upper()} simulations to achieve a user-specified goal.
@@ -513,7 +702,7 @@ network and run {application.upper()} simulations to achieve a user-specified go
 === Section B: Network Information ===
 
 {network_summary}
-
+{metadata_section}{benchmark_section}
 === Response Format ===
 
 {_action_header}
@@ -546,14 +735,19 @@ field in your JSON response (optional): \
 "propose_objectives": [{{"name": "<metric>", "direction": "minimize", "priority": "secondary"}}]
 - The operator can accept or reject proposed objectives via steering.
 
-{_app_section(application, concurrent_pflow)}"""
+{_app_section(application, concurrent_pflow, session_load_factor)}"""
 
 
 def _build_stress_test_prompt(
     command_schema: str,
     network_summary: str,
     application: str,
+    network_metadata: str | None = None,
 ) -> str:
+    metadata_section = ""
+    if network_metadata:
+        metadata_section = f"\n=== Section G: Network Metadata ===\n\n{network_metadata}\n"
+
     return f"""\
 You are a power systems security analyst performing adversarial stress testing \
 on a power grid network. Your goal is to systematically identify critical \
@@ -567,7 +761,7 @@ system operation.
 === Section B: Network Information ===
 
 {network_summary}
-
+{metadata_section}
 === Response Format ===
 
 You MUST respond with a single JSON object. Choose one of three actions:

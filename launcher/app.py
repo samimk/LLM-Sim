@@ -103,7 +103,8 @@ def start_search(base_case_path, goal, backend, model, temperature,
                    pload_profile=None, qload_profile=None, wind_profile=None,
                    tcopflow_duration=1.0, tcopflow_dT=60.0, tcopflow_iscoupling=1,
                    scenario_file=None, sopflow_solver="IPOPT", sopflow_iscoupling=0,
-                   benchmark_opflow=False, concurrent_pflow=False, max_variants=8):
+                   benchmark_opflow=False, concurrent_pflow=False, max_variants=8,
+                   load_factor=None):
     """Initialize and start a new search."""
     # Validate base case still exists
     if not Path(base_case_path).exists():
@@ -141,6 +142,7 @@ def start_search(base_case_path, goal, backend, model, temperature,
         benchmark_opflow=benchmark_opflow,
         concurrent_pflow=concurrent_pflow,
         max_variants=max_variants,
+        load_factor=load_factor,
     )
 
     if st.session_state.session_manager is None:
@@ -436,6 +438,23 @@ def render_sidebar() -> dict:
             concurrent_pflow = False
             max_variants = 8
 
+        load_factor_input = st.number_input(
+            "Session load factor",
+            min_value=0.1,
+            max_value=5.0,
+            value=1.0,
+            step=0.01,
+            format="%.2f",
+            disabled=disabled or application != "pflow",
+            help="Session-level load scaling factor for PFLOW (e.g., 1.23 = 123% of base load). "
+            "Automatically injected into every run — the LLM does not need to include "
+            "scale_all_loads. Set to 1.0 to use the network's native load level.",
+        )
+        if application != "pflow" or load_factor_input == 1.0:
+            load_factor = None
+        else:
+            load_factor = float(load_factor_input)
+
         # ── Search Goal ──────────────────────────────────────────────────
         st.header("🎯 Search Goal")
         example_goals = load_example_goals()
@@ -500,6 +519,7 @@ def render_sidebar() -> dict:
                 benchmark_opflow=benchmark_opflow,
                 concurrent_pflow=concurrent_pflow,
                 max_variants=max_variants,
+                load_factor=load_factor,
             )
             st.rerun()
 
@@ -1128,7 +1148,16 @@ def _render_overview_tab(session):
             st.metric(label, f"${stats['best_objective']:,.2f}")
     elif is_pflow:
         st.metric("Feasibility", f"{stats['feasible_count']} / {stats['total_iterations']} feasible")
-        if best_entry:
+        # Show session-best cost from the journal (covers non-selected variants too)
+        sb = getattr(session.journal, "session_best", None) if hasattr(session, "journal") else None
+        if sb and sb.get("cost"):
+            st.metric(
+                "Session Best Cost",
+                f"${sb['cost']:,.2f}",
+                delta=f"iter {sb['iteration']}, variant {sb['variant_label']}",
+                delta_color="off",
+            )
+        elif best_entry:
             st.metric(
                 "Best Solution",
                 f"Iteration {best_entry.iteration}",

@@ -140,6 +140,18 @@ llm-sim ./data/case_ACTIVSg200.m \
 
 The system prompt dynamically restructures when concurrent mode is on: explore is presented as action #1 (primary), with sequential search heuristics replaced by parallel search guidance. This ensures the LLM uses explore as its default search mechanism rather than falling back to sequential modify actions.
 
+**Pre-execution rejection:** A variant whose every command would be a no-op against the base network (for example, `set_gen_dispatch` against the slack bus) is marked `rejected` and not simulated. The variant still appears in the explore table — labelled `REJECTED` — so the LLM sees that the proposal was wasted, but no PFLOW subprocess is launched and rejected variants are excluded from the Pareto front.
+
+**Network metadata in the system prompt (Section G):** At session start, structural facts about the case are computed once and injected into the LLM's system prompt: slack/reference bus(es), must-run generators (`Pmin == Pmax`), offline generators, and a summary of cost-curve diversity. If all online generators share identical quadratic cost coefficients, an explicit warning is included so the LLM does not waste iterations attempting redispatch-based cost reduction. This section is computed once from the base network and remains stable across iterations.
+
+**Cost reporting on select (PFLOW):** Because PFLOW does not produce an objective value, generation cost for a selected variant is computed from the dispatch and `mpc.gencost` polynomial coefficients. The journal entry's `objective_value` and `tracked_metrics["generation_cost"]` reflect that computed value rather than the placeholder `0.0`.
+
+**Informative variant descriptions:** Each variant's `description` field is auto-generated from its command list when the LLM does not provide one. The description uses compact abbreviations (e.g. `"scale×1.23, vlim[0.95-1.05], dispatch bus135→250MW"`) and marks skipped commands inline with `[SKIP]` plus a parenthetical skip count at the end. This replaces the blank single-letter labels that previously appeared in the explore results table and the journal.
+
+**Identical-cost sibling detection:** After each explore batch, feasible variants sharing the same rounded cost are identified. The more-complex variants (more commands) get an annotation appended to their description (`"← same cost as A; extra commands had no effect"`) and their `cost_equivalent_to` field is set. A batch-level warning is also injected into the next LLM prompt, so the agent knows to avoid repeating the no-op commands.
+
+**Session-best tracking:** The journal maintains a `session_best` record (cost, iteration, variant label, commands) across all variants ever run — not just the selected ones. This is surfaced in the user prompt before every explore call so the LLM can detect regression: if its cheapest batch variant is more expensive than the session best, it knows its current direction is going backward. The record is persisted as a top-level `session_best` key in the journal JSON. The launcher GUI shows the session-best cost in the PFLOW metrics panel.
+
 ## Multi-Objective Tracking
 
 LLM-Sim can track multiple objectives simultaneously and reason about tradeoffs between them. Objectives can be introduced in three ways:

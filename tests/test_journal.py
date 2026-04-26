@@ -238,6 +238,127 @@ class TestAddFromResults:
 
 
 # ===========================================================================
+# add_from_results — PFLOW gencost-derived cost
+# ===========================================================================
+
+class TestAddFromResultsPFLOWCost:
+    """PFLOW does not produce an objective value; cost must be computed
+    from gencost and the dispatch. The entry's objective_value and
+    tracked_metrics["generation_cost"] must reflect the computed value
+    rather than the misleading 0.0 sentinel."""
+
+    def _pflow_result(self, gen_pgs: list[float]) -> OPFLOWResult:
+        from llm_sim.parsers.opflow_results import GenResult
+        gens = [
+            GenResult(
+                bus=i + 1, status=1, fuel="COAL", Pg=pg, Qg=0.0,
+                Pmin=0.0, Pmax=500.0, Qmin=-300.0, Qmax=300.0,
+            )
+            for i, pg in enumerate(gen_pgs)
+        ]
+        return _make_opflow_result(
+            objective_value=0.0,
+            solver="POWER_FLOW",
+            objective_type="",
+            generators=gens,
+            feasibility_detail="feasible",
+        )
+
+    def _gencost(self, tuples: list[tuple[float, float, float]]):
+        from llm_sim.parsers.matpower_model import GenCost
+        return [
+            GenCost(model=2, startup=0.0, shutdown=0.0, ncost=3, coeffs=list(t))
+            for t in tuples
+        ]
+
+    def test_pflow_cost_populates_objective_value(self):
+        """When gencost is supplied, objective_value reflects computed cost."""
+        opf = self._pflow_result([100.0, 200.0])
+        gc = self._gencost([(0.01, 5.0, 100.0), (0.02, 4.0, 200.0)])
+        # 0.01*100^2 + 5*100 + 100 = 100 + 500 + 100 = 700
+        # 0.02*200^2 + 4*200 + 200 = 800 + 800 + 200 = 1800
+        # Total = 2500
+        j = SearchJournal()
+        entry = j.add_from_results(
+            iteration=1,
+            description="PFLOW base",
+            commands=[],
+            opflow_result=opf,
+            sim_elapsed=0.1,
+            llm_reasoning="",
+            mode="fresh",
+            gencost=gc,
+        )
+        assert entry.objective_value == pytest.approx(2500.0)
+
+    def test_pflow_cost_populates_tracked_metrics(self):
+        """tracked_metrics['generation_cost'] must equal computed cost."""
+        opf = self._pflow_result([100.0])
+        gc = self._gencost([(0.01, 5.0, 100.0)])
+        j = SearchJournal()
+        entry = j.add_from_results(
+            iteration=1,
+            description="PFLOW",
+            commands=[],
+            opflow_result=opf,
+            sim_elapsed=0.1,
+            llm_reasoning="",
+            mode="fresh",
+            gencost=gc,
+        )
+        assert entry.tracked_metrics is not None
+        assert entry.tracked_metrics["generation_cost"] == pytest.approx(700.0)
+        assert entry.tracked_metrics["generation_cost"] == entry.objective_value
+
+    def test_pflow_no_gencost_falls_through_to_zero(self):
+        """Without gencost, objective_value is the OPFLOWResult's own field."""
+        opf = self._pflow_result([100.0])
+        j = SearchJournal()
+        entry = j.add_from_results(
+            iteration=1,
+            description="PFLOW no gencost",
+            commands=[],
+            opflow_result=opf,
+            sim_elapsed=0.1,
+            llm_reasoning="",
+            mode="fresh",
+        )
+        # Without gencost, falls through to opflow_result.objective_value (0.0)
+        assert entry.objective_value == 0.0
+        # tracked_metrics is not auto-populated without gencost
+        assert entry.tracked_metrics is None
+
+    def test_pflow_offline_generators_yield_none(self):
+        """If all generators are offline, computed cost is 0.0 → entry sees None."""
+        from llm_sim.parsers.opflow_results import GenResult
+        opf = _make_opflow_result(
+            objective_value=0.0,
+            solver="POWER_FLOW",
+            generators=[
+                GenResult(
+                    bus=1, status=0, fuel="COAL", Pg=0.0, Qg=0.0,
+                    Pmin=0.0, Pmax=500.0, Qmin=-300.0, Qmax=300.0,
+                ),
+            ],
+        )
+        gc = self._gencost([(0.01, 5.0, 100.0)])
+        j = SearchJournal()
+        entry = j.add_from_results(
+            iteration=1,
+            description="PFLOW all-offline",
+            commands=[],
+            opflow_result=opf,
+            sim_elapsed=0.1,
+            llm_reasoning="",
+            mode="fresh",
+            gencost=gc,
+        )
+        # compute_generation_cost returns 0.0 → treated as None
+        assert entry.objective_value is None
+        assert entry.tracked_metrics is None
+
+
+# ===========================================================================
 # format_for_prompt
 # ===========================================================================
 
@@ -349,6 +470,105 @@ class TestExportJSON:
         data = json.loads(out.read_text())
         assert data["entries"] == []
         assert "objective_registry" in data
+
+    def test_export_json_includes_session_best(self, tmp_path: Path):
+        """session_best is included as a top-level key in the JSON."""
+        j = SearchJournal()
+        j.update_session_best(label="A", iteration=3, cost=29924.90, commands=[{"action": "scale_all_loads", "factor": 1.2}])
+        out = tmp_path / "journal.json"
+        j.export_json(out)
+        data = json.loads(out.read_text())
+        assert "session_best" in data
+        assert data["session_best"]["cost"] == pytest.approx(29924.90)
+        assert data["session_best"]["iteration"] == 3
+        assert data["session_best"]["variant_label"] == "A"
+
+    def test_export_json_no_session_best_when_absent(self, tmp_path: Path):
+        """session_best key is absent when no session best has been set."""
+        j = SearchJournal()
+        out = tmp_path / "journal.json"
+        j.export_json(out)
+        data = json.loads(out.read_text())
+        assert "session_best" not in data
+
+
+# ===========================================================================
+# session_best tracking (Task 3)
+# ===========================================================================
+
+class TestSessionBest:
+
+    def test_first_update_sets_best(self):
+        j = SearchJournal()
+        j.update_session_best("A", 1, 30000.0, [])
+        assert j.session_best is not None
+        assert j.session_best["cost"] == pytest.approx(30000.0)
+        assert j.session_best["iteration"] == 1
+        assert j.session_best["variant_label"] == "A"
+
+    def test_cheaper_variant_replaces_best(self):
+        j = SearchJournal()
+        j.update_session_best("A", 1, 30000.0, [])
+        j.update_session_best("B", 2, 29000.0, [])
+        assert j.session_best["cost"] == pytest.approx(29000.0)
+        assert j.session_best["variant_label"] == "B"
+
+    def test_more_expensive_does_not_replace(self):
+        j = SearchJournal()
+        j.update_session_best("A", 1, 29000.0, [])
+        j.update_session_best("B", 2, 31000.0, [])
+        assert j.session_best["cost"] == pytest.approx(29000.0)
+        assert j.session_best["variant_label"] == "A"
+
+    def test_zero_cost_not_recorded(self):
+        """0.0 is a sentinel for 'unknown cost', must not be stored."""
+        j = SearchJournal()
+        j.update_session_best("A", 1, 0.0, [])
+        assert j.session_best is None
+
+    def test_commands_stored_on_best(self):
+        cmds = [{"action": "scale_all_loads", "factor": 1.2}]
+        j = SearchJournal()
+        j.update_session_best("A", 1, 5000.0, cmds)
+        assert j.session_best["commands"] == cmds
+
+
+# ===========================================================================
+# session_best in user prompt
+# ===========================================================================
+
+class TestSessionBestInPrompt:
+
+    def test_format_session_best_contains_cost(self):
+        from llm_sim.prompts.user_prompt import _format_session_best
+        sb = {"cost": 29924.90, "iteration": 5, "variant_label": "A", "commands": []}
+        text = _format_session_best(sb)
+        assert "29,924.90" in text
+        assert "iter 5" in text
+        assert "variant A" in text
+
+    def test_session_best_injected_in_user_prompt(self):
+        from llm_sim.prompts.user_prompt import build_user_prompt
+        sb = {"cost": 12345.67, "iteration": 3, "variant_label": "B",
+              "commands": [{"action": "scale_all_loads", "factor": 1.1}]}
+        prompt = build_user_prompt(
+            goal="test",
+            journal_text=None,
+            results_text=None,
+            session_best=sb,
+        )
+        assert "12,345.67" in prompt
+        assert "Session best" in prompt
+
+    def test_no_session_best_section_when_absent(self):
+        from llm_sim.prompts.user_prompt import build_user_prompt
+        prompt = build_user_prompt(
+            goal="test",
+            journal_text=None,
+            results_text=None,
+            session_best=None,
+        )
+        assert "Session best" not in prompt
 
 
 class TestExportCSV:
@@ -569,3 +789,233 @@ class TestAddComplete:
         assert j.entries[0].convergence_status == "CONVERGED"
         assert j.entries[1].convergence_status == "CONVERGED"
         assert j.entries[2].convergence_status == "COMPLETE"
+
+
+# ===========================================================================
+# Prompt C: Feasibility flag fix (violations_count > 0 must flip feasible)
+# ===========================================================================
+
+class TestFeasibilityFlagFix:
+
+    def test_feasible_with_no_violations(self):
+        """feasibility_detail='feasible' + num_violations=0 → feasible=True."""
+        j = SearchJournal()
+        opf = _make_opflow_result(feasibility_detail="feasible", num_violations=0)
+        entry = j.add_from_results(
+            iteration=1, description="ok", commands=[], opflow_result=opf,
+            sim_elapsed=0.1, llm_reasoning="", mode="fresh",
+        )
+        assert entry.feasible is True
+
+    def test_infeasible_when_violations_present(self):
+        """feasibility_detail='feasible' + num_violations=4 → feasible=False.
+
+        This is the bug that was confirmed: thermal violations set
+        violations_count > 0 but PFLOW still reports feasibility_detail='feasible'.
+        """
+        j = SearchJournal()
+        opf = _make_opflow_result(
+            feasibility_detail="feasible",
+            num_violations=4,
+            max_line_loading_pct=125.0,
+        )
+        entry = j.add_from_results(
+            iteration=2, description="violations", commands=[], opflow_result=opf,
+            sim_elapsed=0.1, llm_reasoning="", mode="fresh",
+        )
+        assert entry.feasible is False
+
+    def test_infeasible_detail_stays_infeasible(self):
+        """feasibility_detail='infeasible' → feasible=False regardless."""
+        j = SearchJournal()
+        opf = _make_opflow_result(feasibility_detail="infeasible", num_violations=0)
+        entry = j.add_from_results(
+            iteration=3, description="inf", commands=[], opflow_result=opf,
+            sim_elapsed=0.1, llm_reasoning="", mode="fresh",
+        )
+        assert entry.feasible is False
+
+    def test_marginal_detail_not_feasible(self):
+        """feasibility_detail='marginal' → feasible=False."""
+        j = SearchJournal()
+        opf = _make_opflow_result(feasibility_detail="marginal", num_violations=0)
+        entry = j.add_from_results(
+            iteration=4, description="marginal", commands=[], opflow_result=opf,
+            sim_elapsed=0.1, llm_reasoning="", mode="fresh",
+        )
+        assert entry.feasible is False
+
+
+# ===========================================================================
+# Prompt C: load_factor in journal
+# ===========================================================================
+
+class TestLoadFactorInJournal:
+
+    def test_load_factor_default_none(self):
+        j = SearchJournal()
+        assert j.load_factor is None
+
+    def test_load_factor_in_json_export(self, tmp_path):
+        j = SearchJournal()
+        j.load_factor = 1.23
+        path = tmp_path / "journal.json"
+        j.export_json(path)
+        data = json.loads(path.read_text())
+        assert data["load_factor"] == pytest.approx(1.23)
+
+    def test_load_factor_absent_when_none(self, tmp_path):
+        j = SearchJournal()
+        path = tmp_path / "journal.json"
+        j.export_json(path)
+        data = json.loads(path.read_text())
+        assert "load_factor" not in data
+
+    def test_load_factor_update(self):
+        j = SearchJournal()
+        j.load_factor = 1.0
+        j.load_factor = 1.35
+        assert j.load_factor == pytest.approx(1.35)
+
+
+# ===========================================================================
+# Prompt C: iteration budget in user prompt
+# ===========================================================================
+
+class TestIterationBudgetInPrompt:
+    """Tests for iteration counter and budget warning in build_user_prompt."""
+
+    def test_iteration_counter_with_budget(self):
+        from llm_sim.prompts.user_prompt import build_user_prompt
+        prompt = build_user_prompt(
+            goal="test",
+            journal_text=None,
+            results_text=None,
+            current_iteration=5,
+            max_iterations=20,
+        )
+        assert "Iteration: 5 / 20" in prompt
+        assert "remaining: 15" in prompt
+
+    def test_iteration_counter_no_budget(self):
+        from llm_sim.prompts.user_prompt import build_user_prompt
+        prompt = build_user_prompt(
+            goal="test",
+            journal_text=None,
+            results_text=None,
+            current_iteration=7,
+            max_iterations=None,
+        )
+        assert "Iteration: 7" in prompt
+        assert "no budget limit" in prompt
+
+    def test_budget_warning_when_remaining_2(self):
+        from llm_sim.prompts.user_prompt import build_user_prompt
+        prompt = build_user_prompt(
+            goal="test",
+            journal_text=None,
+            results_text=None,
+            current_iteration=18,
+            max_iterations=20,
+        )
+        assert "2 iteration(s) remaining" in prompt
+        assert "Prioritize consolidation" in prompt
+
+    def test_budget_warning_absent_when_remaining_10(self):
+        from llm_sim.prompts.user_prompt import build_user_prompt
+        prompt = build_user_prompt(
+            goal="test",
+            journal_text=None,
+            results_text=None,
+            current_iteration=10,
+            max_iterations=20,
+        )
+        assert "Prioritize consolidation" not in prompt
+
+    def test_budget_warning_absent_when_no_budget(self):
+        from llm_sim.prompts.user_prompt import build_user_prompt
+        prompt = build_user_prompt(
+            goal="test",
+            journal_text=None,
+            results_text=None,
+            current_iteration=19,
+            max_iterations=None,
+        )
+        assert "Prioritize consolidation" not in prompt
+
+
+# ===========================================================================
+# Prompt C: format_benchmark_for_prompt
+# ===========================================================================
+
+class TestFormatBenchmarkForPrompt:
+
+    REAL_BENCHMARK = {
+        "opflow_converged": True,
+        "opflow_objective": 27557.57,
+        "pflow_best_computed_cost": 27564.26,
+        "cost_gap_pct": 0.02,
+        "cost_gap_abs": 6.69,
+        "dispatch_comparison": [
+            {"bus": 189, "fuel": "COAL", "opflow_pg": 383.4, "pflow_pg": 736.33,
+             "delta": 352.93, "opflow_pmax": 569.15},
+            {"bus": 100, "fuel": "GAS",  "opflow_pg": 200.0, "pflow_pg": 210.0,
+             "delta": 10.0,  "opflow_pmax": 300.0},
+        ],
+        "loadability": {
+            "opflow_max_factor": 1.6289,
+            "pflow_max_factor": 1.35,
+            "gap_pct": -17.12,
+        },
+    }
+
+    def test_real_benchmark_contains_bus189(self):
+        from llm_sim.prompts.system_prompt import format_benchmark_for_prompt
+        text = format_benchmark_for_prompt(self.REAL_BENCHMARK)
+        assert "189" in text
+
+    def test_real_benchmark_contains_delta(self):
+        from llm_sim.prompts.system_prompt import format_benchmark_for_prompt
+        text = format_benchmark_for_prompt(self.REAL_BENCHMARK)
+        assert "352" in text
+
+    def test_real_benchmark_over_dispatched_note(self):
+        from llm_sim.prompts.system_prompt import format_benchmark_for_prompt
+        text = format_benchmark_for_prompt(self.REAL_BENCHMARK)
+        assert "over-dispatched" in text
+
+    def test_not_converged_returns_unavailable(self):
+        from llm_sim.prompts.system_prompt import format_benchmark_for_prompt
+        text = format_benchmark_for_prompt({"opflow_converged": False})
+        assert text == "Benchmark unavailable."
+
+    def test_none_returns_unavailable(self):
+        from llm_sim.prompts.system_prompt import format_benchmark_for_prompt
+        text = format_benchmark_for_prompt(None)
+        assert text == "Benchmark unavailable."
+
+    def test_negligible_cost_gap_note(self):
+        from llm_sim.prompts.system_prompt import format_benchmark_for_prompt
+        bench = {
+            "opflow_converged": True,
+            "opflow_objective": 10000.0,
+            "pflow_best_computed_cost": 10000.5,
+            "cost_gap_pct": 0.005,
+            "cost_gap_abs": 0.5,
+            "dispatch_comparison": [],
+        }
+        text = format_benchmark_for_prompt(bench)
+        assert "negligible" in text
+
+    def test_large_gap_no_negligible_note(self):
+        from llm_sim.prompts.system_prompt import format_benchmark_for_prompt
+        bench = {
+            "opflow_converged": True,
+            "opflow_objective": 10000.0,
+            "pflow_best_computed_cost": 10500.0,
+            "cost_gap_pct": 5.0,
+            "cost_gap_abs": 500.0,
+            "dispatch_comparison": [],
+        }
+        text = format_benchmark_for_prompt(bench)
+        assert "negligible" not in text

@@ -62,6 +62,7 @@ DEFAULTS: dict[str, Any] = {
         "search_mode": "standard",
         "concurrent_pflow": False,
         "max_variants": 8,
+        "load_factor": None,
     },
     "output": {
         "workdir": "./workdir",
@@ -130,6 +131,7 @@ class SearchConfig:
     benchmark_opflow: bool = False  # Run OPFLOW benchmark after PFLOW search
     concurrent_pflow: bool = False  # Enable concurrent explore/select for PFLOW
     max_variants: int = 8  # Max variants per explore action (range: 2-16)
+    load_factor: Optional[float] = None  # Session-level load scaling factor (PFLOW only)
 
 
 @dataclass(frozen=True)

@@ -156,12 +156,23 @@ class TestValidation:
         result = validate_command(cmd, net)
         assert not result.valid
 
+    def test_slack_bus_dispatch_rejected(self, net):
+        cmd = SetGenDispatch(bus=189, Pg=400.0)
+        result = validate_command(cmd, net)
+        assert not result.valid
+        assert any("reference/slack bus" in e for e in result.errors)
 
-# ===========================================================================
-# Modification tests
-# ===========================================================================
 
 class TestModifications:
+
+    def test_slack_bus_dispatch_skipped(self, net):
+        bus189_pg_before = next(g.Pg for g in net.generators if g.bus == 189)
+        cmd = SetGenDispatch(bus=189, Pg=500.0)
+        modified, report = apply_modifications(net, [cmd])
+        bus189_pg_after = next(g.Pg for g in modified.generators if g.bus == 189)
+        assert bus189_pg_after == bus189_pg_before
+        assert len(report.skipped) == 1
+        assert any("reference/slack bus" in r[1][0] for r in report.skipped)
 
     def test_set_load(self, net):
         cmds = [SetLoad(bus=10, Pd=99.0, Qd=33.0)]
@@ -209,10 +220,10 @@ class TestModifications:
         assert len(report.applied) == 1
 
     def test_set_gen_dispatch(self, net):
-        cmds = [SetGenDispatch(bus=189, Pg=400.0)]
+        cmds = [SetGenDispatch(bus=125, Pg=80.0)]
         modified, _ = apply_modifications(net, cmds)
-        gen189 = next(g for g in modified.generators if g.bus == 189)
-        assert gen189.Pg == 400.0
+        gen125 = next(g for g in modified.generators if g.bus == 125)
+        assert gen125.Pg == 80.0
 
     def test_set_branch_status(self, net):
         cmds = [SetBranchStatus(fbus=2, tbus=1, status=0)]

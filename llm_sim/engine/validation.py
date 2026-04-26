@@ -139,6 +139,13 @@ def validate_command(cmd: ModCommand, net: MATNetwork) -> ValidationResult:
 
     elif isinstance(cmd, SetGenDispatch):
         _validate_bus_exists(net, cmd.bus, errors)
+        bus = _find_bus(net, cmd.bus)
+        if bus is not None and bus.type == 3:
+            errors.append(
+                f"Bus {cmd.bus} is the reference/slack bus (type=3). "
+                f"Its generator output is determined by the power balance — "
+                f"set_gen_dispatch has no effect on the slack bus."
+            )
         gen = _validate_gen_at_bus(net, cmd.bus, cmd.gen_id, errors)
         if gen is not None:
             if cmd.Pg < gen.Pmin or cmd.Pg > gen.Pmax:
