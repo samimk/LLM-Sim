@@ -27,6 +27,7 @@ configs/local_config.yaml
 # IDE
 .idea/
 .vscode/
+*.DS_Store
 *.swp
 *.swo
 .claude/
