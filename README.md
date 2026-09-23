@@ -1,3 +1,12 @@
+> [!IMPORTANT]
+> **LLM-Sim has moved.** This project has been integrated into the
+> [ExaGO](https://github.com/ORNL/ExaGO) repository as **AgentiGrid**, the
+> LLM-driven agentic framework for ExaGO's power grid solver suite
+> (PFLOW, OPFLOW, DCOPFLOW, SCOPFLOW, SOPFLOW, TCOPFLOW).
+>
+> Active development now continues there, under the `agentigrid/` directory.
+> This repository is kept for historical reference and is no longer maintained.
+
 # LLM-Sim
 
 LLM-driven iterative simulation and analysis tool for the [ExaGO](https://github.com/ornl/ExaGO) power grid optimization toolkit.
